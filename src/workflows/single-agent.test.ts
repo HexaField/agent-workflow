@@ -4,6 +4,7 @@ import { singleAgentWorkflowDefinition } from '@hexafield/agent-workflow/workflo
 import type { FileDiff } from '@opencode-ai/sdk'
 import { execSync, spawnSync } from 'child_process'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
 import { opencodeTestHooks } from '../opencodeTestHooks'
@@ -33,7 +34,7 @@ describe('Single agent loop', () => {
   opencodeTestHooks()
 
   it('creates provenance and runs at least one agent turn', async () => {
-    const sessionDir = path.join(process.cwd(), `.tests/single-agent-${Date.now()}`)
+    const sessionDir = path.join(os.tmpdir(), `.tests/single-agent-${Date.now()}`)
     const exists = commandExists('opencode')
     expect(exists, "Required CLI 'opencode' not found on PATH").toBe(true)
 

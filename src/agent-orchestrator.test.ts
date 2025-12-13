@@ -9,6 +9,7 @@ import { singleAgentWorkflowDefinition, verifierWorkerWorkflowDefinition } from 
 import { FileDiff } from '@opencode-ai/sdk'
 import { execSync, spawnSync } from 'child_process'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
 import { opencodeTestHooks } from './opencodeTestHooks'
@@ -32,7 +33,7 @@ describe('Agent orchestrator workflows', () => {
   opencodeTestHooks()
 
   it('executes the verifier-worker workflow from static JSON', async () => {
-    const sessionDir = path.join(process.cwd(), `.tests/orchestrator-${Date.now()}`)
+    const sessionDir = path.join(os.tmpdir(), `.tests/orchestrator-${Date.now()}`)
     const exists = commandExists('opencode')
     expect(exists, "Required CLI 'opencode' not found on PATH").toBe(true)
 
@@ -113,7 +114,7 @@ describe('Agent orchestrator workflows', () => {
   }, 120_000)
 
   it('executes the single-agent workflow definition once', async () => {
-    const sessionDir = path.join(process.cwd(), `.tests/orchestrator-single-${Date.now()}`)
+    const sessionDir = path.join(os.tmpdir(), `.tests/orchestrator-single-${Date.now()}`)
     const exists = commandExists('opencode')
     expect(exists, "Required CLI 'opencode' not found on PATH").toBe(true)
 

@@ -4,6 +4,7 @@ import { verifierWorkerWorkflowDefinition } from '@hexafield/agent-workflow/work
 import type { FileDiff } from '@opencode-ai/sdk'
 import { execSync, spawnSync } from 'child_process'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
 import { opencodeTestHooks } from '../opencodeTestHooks'
@@ -33,7 +34,7 @@ describe('Verifier/worker collaboration loop', () => {
   opencodeTestHooks()
 
   it('completes a simple file creation task', async () => {
-    const sessionDir = path.join(process.cwd(), `.tests/agent-${Date.now()}`)
+    const sessionDir = path.join(os.tmpdir(), `.tests/agent-${Date.now()}`)
     const exists = commandExists('opencode')
     expect(exists, "Required CLI 'opencode' not found on PATH").toBe(true)
 
