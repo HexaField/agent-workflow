@@ -1,7 +1,7 @@
 import type { FileDiff, Session } from '@opencode-ai/sdk'
+import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
-import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { z } from 'zod'
 import { AgentRunResponse, AgentStreamCallback, invokeStructuredJsonCall, parseJsonPayload } from './agent'
@@ -37,9 +37,15 @@ type AgentWorkflowRunOptionsBase = {
   maxRounds?: number
   onStream?: AgentStreamCallback
   workflowId?: string
-  workflowSource?: 'builtin' | 'user'
+  workflowSource?: 'builtin' | 'user' | 'reference'
   workflowLabel?: string
+  workflows?: Record<string, AgentWorkflowDefinition>
+  workflowResolver?: WorkflowResolver
 }
+
+export type WorkflowResolver = (
+  workflowId: string
+) => Promise<AgentWorkflowDefinition | undefined> | AgentWorkflowDefinition | undefined
 export type UserInputsFromDefinition<TDefinition extends AgentWorkflowDefinition> = TDefinition extends {
   user: infer U
 }
@@ -82,17 +88,15 @@ type BootstrapStepDefinition<TDefinition extends AgentWorkflowDefinition> =
     : never
 
 type CliStepDefinition = Extract<WorkflowStepDefinition, { type: 'cli' }>
-type AgentStepDefinition = Exclude<WorkflowStepDefinition, { type: 'cli' }>
+type WorkflowReferenceStepDefinition = Extract<WorkflowStepDefinition, { type: 'workflow' }>
+type AgentStepDefinition = Exclude<WorkflowStepDefinition, { type: 'cli' } | { type: 'workflow' }>
 
 type ParserOutputForRole<TDefinition extends AgentWorkflowDefinition, Role extends WorkflowRoleName<TDefinition>> =
   ParserSchemaForRole<TDefinition, Role> extends WorkflowParserJsonSchema
     ? WorkflowParserJsonOutput<ParserSchemaForRole<TDefinition, Role>>
     : unknown
 
-type AgentStepTurn<
-  TDefinition extends AgentWorkflowDefinition,
-  TStep extends AgentStepDefinition
-> = {
+type AgentStepTurn<TDefinition extends AgentWorkflowDefinition, TStep extends AgentStepDefinition> = {
   key: TStep['key']
   role: TStep['role']
   round: number
@@ -115,10 +119,33 @@ type CliStepTurn = {
   command: string
 }
 
+type WorkflowReferenceTurn = {
+  key: string
+  round: number
+  raw: string
+  parsed: {
+    outcome: string
+    reason: string
+    runId: string
+    workflowId: string
+    rounds: number
+    details?: {
+      bootstrap?: unknown
+      rounds?: Array<unknown>
+    }
+  }
+  type: 'workflow'
+  workflowId: string
+}
+
 type WorkflowTurnForStep<
   TDefinition extends AgentWorkflowDefinition,
   TStep extends WorkflowStepDefinition
-> = TStep extends CliStepDefinition ? CliStepTurn : AgentStepTurn<TDefinition, Extract<TStep, AgentStepDefinition>>
+> = TStep extends CliStepDefinition
+  ? CliStepTurn
+  : TStep extends WorkflowReferenceStepDefinition
+    ? WorkflowReferenceTurn
+    : AgentStepTurn<TDefinition, Extract<TStep, AgentStepDefinition>>
 
 type RoundStepTurn<TDefinition extends AgentWorkflowDefinition> = WorkflowTurnForStep<
   TDefinition,
@@ -390,6 +417,8 @@ type StepExecutionContext<TDefinition extends AgentWorkflowDefinition> = {
   directory: string
   runId: string
   onStream?: AgentStreamCallback
+  workflowResolver?: WorkflowResolver
+  workflows?: Record<string, AgentWorkflowDefinition>
 }
 
 const coerceTemplateValue = (value: string): unknown => {
@@ -400,6 +429,26 @@ const coerceTemplateValue = (value: string): unknown => {
   } catch {
     return value
   }
+}
+
+const renderWorkflowInputTemplates = <TDefinition extends AgentWorkflowDefinition>(
+  input: unknown,
+  scope: TemplateScope<TDefinition>
+): unknown => {
+  if (typeof input === 'string') {
+    return coerceTemplateValue(renderTemplateString(input, scope))
+  }
+  if (Array.isArray(input)) {
+    return input.map((entry) => renderWorkflowInputTemplates(entry, scope))
+  }
+  if (input && typeof input === 'object') {
+    const rendered: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+      rendered[key] = renderWorkflowInputTemplates(value, scope)
+    }
+    return rendered
+  }
+  return input
 }
 
 const renderCliArgs = <TDefinition extends AgentWorkflowDefinition>(
@@ -445,6 +494,77 @@ const executeCliStep = async <TDefinition extends AgentWorkflowDefinition>(
     parsed: { stdout, stderr, exitCode, args },
     type: 'cli',
     command: step.command
+  }
+}
+
+const resolveWorkflowReference = async (
+  workflowId: string,
+  ctx: StepExecutionContext<AgentWorkflowDefinition>
+): Promise<AgentWorkflowDefinition | undefined> => {
+  if (ctx.workflows?.[workflowId]) {
+    return ctx.workflows[workflowId]
+  }
+  if (ctx.workflowResolver) {
+    return await ctx.workflowResolver(workflowId)
+  }
+  return undefined
+}
+
+const executeWorkflowReferenceStep = async <TDefinition extends AgentWorkflowDefinition>(
+  step: WorkflowReferenceStepDefinition,
+  scope: TemplateScope<TDefinition>,
+  ctx: StepExecutionContext<TDefinition>
+): Promise<WorkflowReferenceTurn> => {
+  const targetDefinition = await resolveWorkflowReference(step.workflowId, ctx)
+  if (!targetDefinition) {
+    throw new Error(`Workflow step ${step.key} references unknown workflow '${step.workflowId}'.`)
+  }
+
+  const renderedInput = renderWorkflowInputTemplates(step.input ?? {}, scope)
+  let validatedInput = renderedInput
+  if (step.inputSchema) {
+    try {
+      validatedInput = workflowParserSchemaToZod(step.inputSchema as WorkflowParserJsonSchema).parse(renderedInput)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Invalid input for workflow reference ${step.workflowId}: ${message}`)
+    }
+  }
+
+  const childRunId = `${ctx.runId}:${step.key}:${scope.round}`
+  const childRun = await runAgentWorkflow(targetDefinition, {
+    sessionDir: ctx.directory,
+    model: ctx.model,
+    user: validatedInput as Record<string, unknown>,
+    runID: childRunId,
+    workflowId: targetDefinition.id,
+    workflowSource: 'reference',
+    workflowLabel: step.workflowId,
+    onStream: ctx.onStream,
+    workflows: ctx.workflows,
+    workflowResolver: ctx.workflowResolver
+  })
+
+  const childResult = await childRun.result
+  const parsed = {
+    outcome: childResult.outcome,
+    reason: childResult.reason,
+    runId: childRun.runId,
+    workflowId: targetDefinition.id,
+    rounds: childResult.rounds.length,
+    details: {
+      bootstrap: childResult.bootstrap,
+      rounds: childResult.rounds
+    }
+  }
+
+  return {
+    key: step.key,
+    round: scope.round,
+    raw: JSON.stringify(parsed),
+    parsed,
+    type: 'workflow',
+    workflowId: targetDefinition.id
   }
 }
 
@@ -497,6 +617,13 @@ const executeStep = async <TDefinition extends AgentWorkflowDefinition, TStep ex
   scope: TemplateScope<TDefinition>,
   ctx: StepExecutionContext<TDefinition>
 ): Promise<WorkflowTurnForStep<TDefinition, TStep>> => {
+  if ((step as WorkflowReferenceStepDefinition).type === 'workflow') {
+    return (await executeWorkflowReferenceStep(
+      step as WorkflowReferenceStepDefinition,
+      scope,
+      ctx
+    )) as WorkflowTurnForStep<TDefinition, TStep>
+  }
   if ((step as CliStepDefinition).type === 'cli') {
     return (await executeCliStep(step as CliStepDefinition, scope, ctx)) as WorkflowTurnForStep<TDefinition, TStep>
   }
@@ -783,7 +910,9 @@ export async function runAgentWorkflow<TDefinition extends AgentWorkflowDefiniti
       model,
       directory,
       runId,
-      onStream: options.onStream
+      onStream: options.onStream,
+      workflows: options.workflows,
+      workflowResolver: options.workflowResolver
     }
 
     let bootstrapTurn: BootstrapTurn<TDefinition> | undefined

@@ -114,6 +114,7 @@ A \`round\` defines the repeating sequence of steps, transitions, and a default 
 
 - Agent step: \`type: "agent"\` (default when omitted). Fields: \`key\`, \`role\`, \`prompt\`, optional \`next\`, \`stateUpdates\`, \`transitions\`, \`exits\`.
 - CLI step: \`type: "cli"\`. Fields: \`key\`, \`command\`, optional \`args\` (templated strings), optional \`argsSchema\` (compact JSON-schema-like validator for args), optional \`cwd\`, plus the same \`next\` / \`stateUpdates\` / \`transitions\` / \`exits\` fields. CLI steps emit \`parsed = { stdout, stderr, exitCode, args }\` so transitions and templating can respond to command results.
+- Workflow reference step: \`type: "workflow"\`. Fields: \`key\`, \`workflowId\`, optional \`input\` (templated object), optional \`inputSchema\` (compact JSON-schema-like validator applied after templating), optional \`next\` / \`stateUpdates\` / \`transitions\` / \`exits\`. The orchestrator resolves \`workflowId\` from a registry/resolver, runs the child workflow synchronously, and exposes a summary on the step (\`parsed.outcome\`, \`parsed.reason\`, \`parsed.runId\`, \`parsed.rounds\`).
 
 ### Template Rendering
 

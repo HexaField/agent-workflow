@@ -179,7 +179,19 @@ const workflowCliStepSchema = z.object({
   exits: z.array(workflowTransitionSchema).optional()
 })
 
-const workflowStepSchema = z.union([workflowCliStepSchema, workflowAgentStepSchema])
+const workflowReferenceStepSchema = z.object({
+  type: z.literal('workflow'),
+  key: z.string().min(1),
+  workflowId: z.string().min(1),
+  input: z.unknown().optional(),
+  inputSchema: workflowParserJsonSchema.optional(),
+  next: z.string().min(1).optional(),
+  stateUpdates: z.record(z.string(), z.string()).optional(),
+  transitions: z.array(workflowTransitionSchema).optional(),
+  exits: z.array(workflowTransitionSchema).optional()
+})
+
+const workflowStepSchema = z.union([workflowCliStepSchema, workflowAgentStepSchema, workflowReferenceStepSchema])
 
 const workflowRoundSchema = z
   .object({
@@ -280,6 +292,7 @@ export type WorkflowCondition = DeepReadonly<WorkflowConditionDraft>
 export type WorkflowOutcomeTemplate = DeepReadonly<WorkflowOutcomeTemplateDraft>
 export type WorkflowTransitionDefinition = DeepReadonly<WorkflowTransitionDraft>
 export type WorkflowStepDefinition = DeepReadonly<WorkflowStepDraft>
+export type WorkflowReferenceStepDefinition = DeepReadonly<z.infer<typeof workflowReferenceStepSchema>>
 export type AgentWorkflowDefinition = DeepReadonly<WorkflowDefinitionDraft>
 export type WorkflowRoleDefinition = DeepReadonly<z.infer<typeof workflowRoleDefinitionSchema>>
 export type WorkflowRoleParser = WorkflowRoleDefinition['parser']

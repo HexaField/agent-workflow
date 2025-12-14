@@ -33,7 +33,7 @@ export type RunMeta = {
   createdAt: string
   updatedAt: string
   workflowId?: string
-  workflowSource?: 'builtin' | 'user'
+  workflowSource?: 'builtin' | 'user' | 'reference'
   workflowLabel?: string
 }
 
@@ -78,7 +78,9 @@ export function loadRunMeta(runId: string, directory: string): RunMeta {
     updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
     workflowId: typeof parsed.workflowId === 'string' ? parsed.workflowId : undefined,
     workflowSource:
-      parsed.workflowSource === 'user' || parsed.workflowSource === 'builtin' ? parsed.workflowSource : undefined,
+      parsed.workflowSource === 'user' || parsed.workflowSource === 'builtin' || parsed.workflowSource === 'reference'
+        ? parsed.workflowSource
+        : undefined,
     workflowLabel: typeof parsed.workflowLabel === 'string' ? parsed.workflowLabel : undefined
   }
 }
