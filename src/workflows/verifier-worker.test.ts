@@ -40,18 +40,6 @@ describe('Verifier/worker collaboration loop', () => {
 
     fs.mkdirSync(sessionDir, { recursive: true })
 
-    const opencodeConfig = {
-      $schema: 'https://opencode.ai/config.json',
-      permission: {
-        edit: 'allow',
-        bash: 'allow',
-        webfetch: 'allow',
-        doom_loop: 'allow',
-        external_directory: 'deny'
-      }
-    }
-    fs.writeFileSync(path.join(sessionDir, 'opencode.json'), JSON.stringify(opencodeConfig, null, 2))
-
     initGitRepo(sessionDir)
 
     const scenario = `Create a readme.md file that includes the text "Hello, world".`
@@ -103,18 +91,23 @@ describe('Verifier/worker collaboration loop', () => {
       return JSON.parse(fs.readFileSync(file, 'utf8')) as RunMeta
     })
 
+    expect(logs.length).toBeGreaterThan(0)
+
+    const namespacedWorkerName = `${verifierWorkerWorkflowDefinition.id}.worker`
+    const namespacedVerifierName = `${verifierWorkerWorkflowDefinition.id}.verifier`
+
     for (const entry of logs) {
       expect(typeof entry.id).toBe('string')
 
       expect(entry.agents.length).toBe(2)
-      const workerAgent = entry.agents.find((a) => a.role === 'worker')
-      const verifierAgent = entry.agents.find((a) => a.role === 'verifier')
+      const workerAgent = entry.agents.find((a) => a.role === namespacedWorkerName)
+      const verifierAgent = entry.agents.find((a) => a.role === namespacedVerifierName)
       expect(workerAgent?.sessionId).toBeDefined()
       expect(verifierAgent?.sessionId).toBeDefined()
 
       expect(entry.log.length).toBeGreaterThan(1)
-      const workerMessages = entry.log.filter((e) => e.role === 'worker')
-      const verifierMessages = entry.log.filter((e) => e.role === 'verifier')
+      const workerMessages = entry.log.filter((e) => e.role === namespacedWorkerName)
+      const verifierMessages = entry.log.filter((e) => e.role === namespacedVerifierName)
       expect(workerMessages.length).toBeGreaterThan(0)
       expect(verifierMessages.length).toBeGreaterThan(0)
       const userMessages = entry.log.filter((e) => e.role === 'user')
@@ -137,12 +130,14 @@ describe('Verifier/worker collaboration loop', () => {
     const readmeContent = fs.readFileSync(foundReadmes[0], 'utf8')
     expect(readmeContent.includes('Hello, world')).toBe(true)
 
-    const workerDiffs: FileDiff[] = await getWorkflowRunDiff(response.runId, sessionDir, { role: 'worker' })
+    const workerDiffs: FileDiff[] = await getWorkflowRunDiff(response.runId, sessionDir, { role: namespacedWorkerName })
     expect(workerDiffs.length).toBeGreaterThan(0)
     const readmeDiff = workerDiffs.find((diff) => diff.file.toLowerCase().includes('readme.md'))
     expect(readmeDiff).toBeTruthy()
     expect(readmeDiff?.after.toLowerCase()).toContain('hello, world')
-    const verifierDiffs: FileDiff[] = await getWorkflowRunDiff(response.runId, sessionDir, { role: 'verifier' })
+    const verifierDiffs: FileDiff[] = await getWorkflowRunDiff(response.runId, sessionDir, {
+      role: namespacedVerifierName
+    })
     expect(Array.isArray(verifierDiffs)).toBe(true)
   }, 240_000)
 })

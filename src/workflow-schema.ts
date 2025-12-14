@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TOOL_KEYS } from './opencode'
 
 type DeepReadonly<T> = T extends (...args: any[]) => any
   ? T
@@ -174,7 +175,10 @@ const workflowSessionRoleSchema = z.object({
 
 const workflowRoleDefinitionSchema = z.object({
   systemPrompt: z.string().min(1),
-  parser: z.string()
+  parser: z.string(),
+  tools: z
+    .object(Object.fromEntries((TOOL_KEYS as readonly string[]).map((k) => [k, z.boolean().optional()])))
+    .optional()
 })
 
 const workflowParserJsonSchema: z.ZodType<WorkflowParserJsonSchemaDraft> = z.lazy(

@@ -203,7 +203,20 @@ export const workflowCreateWorkflowDocument = {
     creator: {
       systemPrompt:
         'You are an expert workflow author. Respond with a single valid JSON object only (no markdown, no code fences, no leading text). The FIRST character of your reply must be `{` and the last must be `}`; nothing else may precede or follow. Shape: {"id": string, "content": string}. Use id "workflow-create.v1". The "content" must be a JSON string that is itself a valid AgentWorkflowDefinition (no TypeScript). Do not include commentary or prose. Do not include the README text inside the content; use it only for guidance. Escape newlines in the content with `\n` so the JSON remains valid.',
-      parser: 'createWorkflow'
+      parser: 'createWorkflow',
+      tools: {
+        read: false,
+        write: false,
+        edit: false,
+        bash: false,
+        grep: false,
+        glob: false,
+        list: false,
+        patch: false,
+        todowrite: false,
+        todoread: false,
+        webfetch: true
+      }
     }
   },
   state: { initial: {} },

@@ -13,9 +13,21 @@ export const singleAgentWorkflowDocument = {
   },
   roles: {
     agent: {
-      systemPrompt:
-        'You are a helpful engineering agent responding with valid JSON object {"status": string, "summary": string} summarizing your work.',
-      parser: 'passthrough'
+      systemPrompt: `You are a helpful software engineering agent. Handle the user's request exactly, then respond with a valid JSON object {"status": string, "summary": string} summarizing your work.`,
+      parser: 'passthrough',
+      tools: {
+        read: true,
+        write: true,
+        edit: true,
+        bash: true,
+        grep: true,
+        glob: true,
+        list: true,
+        patch: true,
+        todowrite: true,
+        todoread: true,
+        webfetch: true
+      }
     }
   },
   state: {

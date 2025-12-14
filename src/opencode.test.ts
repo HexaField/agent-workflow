@@ -1,24 +1,21 @@
-import { createSession, getMessageDiff, promptSession } from '@hexafield/agent-workflow/opencode'
-import { TextPart } from '@opencode-ai/sdk'
+import {
+  createAgent,
+  createSession,
+  getAgents,
+  getMessageDiff,
+  getOpencodeClient,
+  promptSession
+} from '@hexafield/agent-workflow/opencode'
+import { Part, TextPart } from '@opencode-ai/sdk'
 import { execSync } from 'child_process'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
 import { opencodeTestHooks } from './opencodeTestHooks'
 
 //note: big-pickle likes to have a reasoning step
 const MODEL = 'github-copilot/gpt-5-mini' // 'opencode/big-pickle'
-
-const OPENCODE_CONFIG = {
-  $schema: 'https://opencode.ai/config.json',
-  permission: {
-    edit: 'allow',
-    bash: 'allow',
-    webfetch: 'allow',
-    doom_loop: 'allow',
-    external_directory: 'deny'
-  }
-}
 
 const initGitRepo = (directory: string) => {
   try {
@@ -33,9 +30,8 @@ const initGitRepo = (directory: string) => {
 }
 
 const createSessionDir = () => {
-  const sessionDir = path.join(process.cwd(), '.tests', `opencode-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const sessionDir = path.join(os.tmpdir(), '.tests', `opencode-${Date.now()}-${Math.random().toString(16).slice(2)}`)
   fs.mkdirSync(sessionDir, { recursive: true })
-  fs.writeFileSync(path.join(sessionDir, 'opencode.json'), JSON.stringify(OPENCODE_CONFIG, null, 2))
   initGitRepo(sessionDir)
   return sessionDir
 }
@@ -48,7 +44,6 @@ describe('Opencode Module', () => {
     const session = await createSession(sessionDir)
     expect(session).toBeDefined()
     expect(session.id).toBeDefined()
-    console.log('Created Opencode session with ID:', session.id)
   })
 
   it('should prompt a session successfully', async () => {
@@ -56,7 +51,6 @@ describe('Opencode Module', () => {
     const session = await createSession(sessionDir)
     const promptText = 'What is the capital of France?'
     const response = await promptSession(session, [promptText], MODEL)
-    console.log('Received response from Opencode session:', response)
     expect(response).toBeDefined()
     expect(response.parts.length).toBe(3)
     const textParts = response.parts[1] as TextPart
@@ -64,12 +58,49 @@ describe('Opencode Module', () => {
     expect(answer.includes('paris')).toBe(true)
   }, 120_000)
 
+  it('should create and invoke a project-scoped agent', async () => {
+    const sessionDir = createSessionDir()
+
+    const AGENT_NAME = 'test-agent'
+    const TOKEN = 'AGENT_CREATE_TEST_OK'
+    const agentPrompt = `You are the ${AGENT_NAME} agent. When invoked, respond exactly with:\n${TOKEN}`
+
+    const created = await createAgent(sessionDir, AGENT_NAME, MODEL, agentPrompt)
+    expect(created).toBeDefined()
+
+    const opencode = await getOpencodeClient(sessionDir)
+    const agentsResp = await getAgents(opencode, sessionDir)
+    const agentList = (agentsResp && agentsResp.data) || []
+    const found = agentList.find((a) => a.name === AGENT_NAME)
+    expect(found).toBeTruthy()
+
+    const session = await createSession(sessionDir)
+    const response = await promptSession(session, [`please respond`], MODEL, AGENT_NAME)
+    expect(response).toBeDefined()
+    const textParts = (response.parts || []).filter((p: Part) => p?.type === 'text') as TextPart[]
+    const lastText = textParts.length ? textParts.at(-1)!.text : ''
+    expect(typeof lastText).toBe('string')
+
+    expect(lastText.includes(TOKEN)).toBe(true)
+  }, 120_000)
+
   it('should retrieve message diffs after file edits', async () => {
     const sessionDir = createSessionDir()
+
+    const AGENT_NAME = 'test-agent'
+    const agentPrompt = `You are the ${AGENT_NAME} agent. When invoked, do as the user instructs.`
+
+    const created = await createAgent(sessionDir, AGENT_NAME, MODEL, agentPrompt, {
+      read: true,
+      edit: true,
+      bash: true
+    })
+    expect(created).toBeDefined()
+
     const session = await createSession(sessionDir)
     const promptText = `Create (or overwrite) a file named "opencode-test.md" in the workspace root with the exact contents: "Hello from the Opencode tests" followed by a newline. After writing, confirm the file contents.`
-    const response = await promptSession(session, [promptText], MODEL)
-    const messageId = response.parts.find((part: any) => typeof part?.messageID === 'string')?.messageID as
+    const response = await promptSession(session, [promptText], MODEL, AGENT_NAME)
+    const messageId = response.parts.find((part) => typeof part?.messageID === 'string')?.messageID as
       | string
       | undefined
 

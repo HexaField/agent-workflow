@@ -40,18 +40,6 @@ describe('Workflow-create authoring', () => {
 
     fs.mkdirSync(sessionDir, { recursive: true })
 
-    const opencodeConfig = {
-      $schema: 'https://opencode.ai/config.json',
-      permission: {
-        edit: 'allow',
-        bash: 'allow',
-        webfetch: 'allow',
-        doom_loop: 'allow',
-        external_directory: 'deny'
-      }
-    }
-    fs.writeFileSync(path.join(sessionDir, 'opencode.json'), JSON.stringify(opencodeConfig, null, 2))
-
     initGitRepo(sessionDir)
 
     const scenario = `Create a workflow that can create a markdown file named "workflow-created.md" with the content "This file was created by a workflow."`
@@ -90,14 +78,18 @@ describe('Workflow-create authoring', () => {
       return JSON.parse(fs.readFileSync(file, 'utf8')) as RunMeta
     })
 
+    expect(logs.length).toBeGreaterThan(0)
+
     for (const entry of logs) {
       expect(typeof entry.id).toBe('string')
       expect(entry.agents.length).toBeGreaterThanOrEqual(1)
       expect(entry.log.length).toBeGreaterThan(0)
     }
 
+    const namespacedCreatorName = `${workflowCreateWorkflowDefinition.id}.creator`
+
     // There may not be file diffs for authored content (creator returned content only), but ensure the run diff call works
-    const diffs: FileDiff[] = await getWorkflowRunDiff(agentRun.runId, sessionDir, { role: 'creator' })
+    const diffs: FileDiff[] = await getWorkflowRunDiff(agentRun.runId, sessionDir, { role: namespacedCreatorName })
     expect(Array.isArray(diffs)).toBe(true)
   }, 240_000)
 })

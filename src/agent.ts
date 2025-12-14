@@ -69,8 +69,7 @@ const captureDiffSnapshot = async (args: {
 export async function invokeStructuredJsonCall<T>(options: {
   step: string
   role: string
-  systemPrompt: string
-  basePrompt: string
+  prompt: string
   model: string
   session: Session
   runId: string
@@ -78,11 +77,11 @@ export async function invokeStructuredJsonCall<T>(options: {
   onStream?: AgentStreamCallback
   parseResponse?: (res: string) => T
 }): Promise<{ raw: string; parsed: T }> {
-  let prompt = options.basePrompt
+  let prompt = options.prompt
   let lastError: Error | null = null
 
   for (let attempt = 1; attempt <= MAX_JSON_ATTEMPTS; attempt++) {
-    const response = await promptSession(options.session, [options.systemPrompt, prompt], options.model)
+    const response = await promptSession(options.session, [prompt], options.model, options.role)
     const raw = extractResponseText(response.parts)
 
     const diffSnapshot = await captureDiffSnapshot({
@@ -131,7 +130,7 @@ export async function invokeStructuredJsonCall<T>(options: {
       if (attempt === MAX_JSON_ATTEMPTS) {
         throw lastError
       }
-      prompt = buildRetryPrompt(options.basePrompt, lastError.message)
+      prompt = buildRetryPrompt(options.prompt, lastError.message)
     }
   }
 

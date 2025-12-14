@@ -29,7 +29,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "^1.0.129",
+    "@opencode-ai/sdk": "^1.0.152",
     "zod": "^4.1.12"
   },
   "devDependencies": {

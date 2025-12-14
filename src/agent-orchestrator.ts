@@ -4,7 +4,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { z } from 'zod'
 import { AgentRunResponse, AgentStreamCallback, invokeStructuredJsonCall, parseJsonPayload } from './agent'
-import { createSession, getMessageDiff, getSession } from './opencode'
+import { ToolOptions, createAgent, createSession, getMessageDiff, getSession } from './opencode'
 import {
   RunMeta,
   createRunMeta,
@@ -160,12 +160,13 @@ async function ensureWorkflowSessions(
   definition: AgentWorkflowDefinition,
   runId: string,
   directory: string,
-  metaExtras?: Partial<RunMeta>
+  metaExtras?: Partial<RunMeta>,
+  model?: string
 ): Promise<SessionMap> {
   const sessions: SessionMap = {}
   const requiredRoles = definition.sessions.roles ?? []
 
-  const hydrateSessionForRole = async (role: string, nameTemplate?: string): Promise<Session> => {
+  const hydrateSessionForRole = async (nameTemplate?: string): Promise<Session> => {
     const renderContext = { runId }
     const name = nameTemplate ? renderSimpleTemplate(nameTemplate, renderContext) : undefined
     return createSession(directory, name ? { name } : {})
@@ -174,9 +175,15 @@ async function ensureWorkflowSessions(
   if (!hasRunMeta(runId, directory)) {
     const createdAgents: { role: string; sessionId: string }[] = []
     for (const roleConfig of requiredRoles) {
-      const session = await hydrateSessionForRole(roleConfig.role, roleConfig.nameTemplate)
-      createdAgents.push({ role: roleConfig.role, sessionId: session.id })
+      const namespacedAgentName = definition.id + '.' + roleConfig.role
+      const session = await hydrateSessionForRole(roleConfig.nameTemplate)
+      createdAgents.push({ role: namespacedAgentName, sessionId: session.id })
       sessions[roleConfig.role] = session
+
+      const roleDef = definition.roles[roleConfig.role]
+      const systemPrompt = roleDef.systemPrompt
+      const agentModel = model ?? definition.model ?? 'github-copilot/gpt-5-mini'
+      await createAgent(directory, namespacedAgentName, agentModel, systemPrompt, roleDef?.tools as ToolOptions)
     }
     const runMeta = createRunMeta(directory, runId, createdAgents, metaExtras)
     saveRunMeta(runMeta, runId, directory)
@@ -192,14 +199,19 @@ async function ensureWorkflowSessions(
       session = await getSession(directory, existing.sessionId)
     }
     if (!session) {
-      session = await hydrateSessionForRole(roleConfig.role, roleConfig.nameTemplate)
-      const agentEntry = meta.agents.find((agent) => agent.role === roleConfig.role)
+      const namespacedAgentName = definition.id + '.' + roleConfig.role
+      session = await hydrateSessionForRole(roleConfig.nameTemplate)
+      const agentEntry = meta.agents.find((agent) => agent.role === namespacedAgentName)
       if (agentEntry) {
         agentEntry.sessionId = session.id
       } else {
-        meta.agents.push({ role: roleConfig.role, sessionId: session.id })
+        meta.agents.push({ role: namespacedAgentName, sessionId: session.id })
       }
       saveRunMeta(meta, runId, directory)
+      const roleDef = definition.roles[roleConfig.role]
+      const systemPrompt = roleDef.systemPrompt
+      const agentModel = model ?? definition.model ?? 'github-copilot/gpt-5-mini'
+      await createAgent(directory, namespacedAgentName, agentModel, systemPrompt, roleDef?.tools as ToolOptions)
     }
     sessions[roleConfig.role] = session
   }
@@ -384,13 +396,13 @@ const executeStep = async <TDefinition extends AgentWorkflowDefinition, TStep ex
       `Parser '${roleConfig.parser}' for role '${step.role}' is not defined in workflow '${ctx.definition.id}'.`
     )
   }
+  const agentPersona = ctx.definition.id + '.' + step.role
   const parserSchema = workflowParserSchemaToZod(parserDefinition as WorkflowParserJsonSchema)
   const parser = parseJsonPayload(step.role, roleConfig.parser, parserSchema)
   const { raw, parsed } = await invokeStructuredJsonCall({
     step: step.key,
-    role: step.role,
-    systemPrompt: roleConfig.systemPrompt,
-    basePrompt: prompt,
+    role: agentPersona,
+    prompt: prompt,
     model: ctx.model,
     session,
     runId: ctx.runId,
@@ -621,11 +633,17 @@ export async function runAgentWorkflow<TDefinition extends AgentWorkflowDefiniti
   const definitionMaxRounds = definition.flow.round.maxRounds ?? 10
   const maxRounds = options.maxRounds ?? definitionMaxRounds
   const runId = options.runID ?? `${definition.id}-${Date.now()}`
-  const sessions = await ensureWorkflowSessions(definition, runId, directory, {
-    workflowId: options.workflowId ?? definition.id,
-    workflowSource: options.workflowSource,
-    workflowLabel: options.workflowLabel ?? definition.description
-  })
+  const sessions = await ensureWorkflowSessions(
+    definition,
+    runId,
+    directory,
+    {
+      workflowId: options.workflowId ?? definition.id,
+      workflowSource: options.workflowSource,
+      workflowLabel: options.workflowLabel ?? definition.description
+    },
+    model
+  )
   // Record provided user inputs (structured object required)
   const userPayload = options.user
   recordUserMessage(runId, directory, userPayload, {

@@ -1,4 +1,6 @@
 import type { FileDiff, OpencodeClient, Part, Session, TextPart } from '@opencode-ai/sdk'
+import fs from 'fs'
+import path from 'path'
 
 let opencodeServer: {
   url: string
@@ -83,13 +85,6 @@ type CreateSessionOptions = {
   name?: string
 }
 
-const buildFallbackParts = (reason: string): Part[] => [
-  {
-    type: 'text',
-    text: JSON.stringify({ status: 'error', summary: reason })
-  } as Part
-]
-
 /**
  * Creates and returns a new Opencode session for the specified directory.
  *
@@ -127,13 +122,20 @@ export const getSession = async (directory: string, id: string): Promise<Session
 
 /** Prompts the specified Opencode session with a given prompt.
  *
- * @param directory - The directory associated with the session.
  * @param session - The Opencode session to be prompted.
- * @param prompt - The prompt text to send to the session.
+ * @param prompts - Array of prompt parts to send to the session.
+ * @param model - Model identifier in the form `provider/model`.
+ * @param agent - Optional agent name to invoke (preferred over `@agent` mentions).
  * @param signal - Optional AbortSignal to cancel the request.
  * @returns A Promise that resolves to the response data from the prompt.
  */
-export const promptSession = async (session: Session, prompts: string[], model: string, signal?: AbortSignal) => {
+export const promptSession = async (
+  session: Session,
+  prompts: string[],
+  model: string,
+  agent?: string,
+  signal?: AbortSignal
+) => {
   const opencode = await getOpencodeClient(session.directory)
 
   const [providerID, modelID] = model.split('/')
@@ -142,16 +144,25 @@ export const promptSession = async (session: Session, prompts: string[], model: 
     path: { id: session.id },
     body: {
       model: { providerID, modelID },
-      parts: prompts.map((prompt) => ({ type: 'text', text: prompt }))
+      parts: prompts.map((prompt) => ({ type: 'text', text: prompt })),
+      agent
     },
     signal
   })
 
   const payload = (response?.data ?? {}) as { parts?: Part[] }
-  const parts: Part[] =
-    Array.isArray(payload.parts) && payload.parts?.length
-      ? payload.parts
-      : buildFallbackParts('opencode returned no response parts')
+
+  if (!Array.isArray(payload.parts) || !payload.parts?.length) {
+    console.error('Opencode session prompt returned no response parts', {
+      sessionId: session.id,
+      model,
+      agent,
+      prompts,
+      response
+    })
+    throw new Error('Opencode session prompt returned no response parts')
+  }
+  const parts: Part[] = payload.parts
 
   return { ...(payload as Record<string, unknown>), parts }
 }
@@ -196,3 +207,154 @@ export const extractResponseText = (response?: Part[]): string => {
   }
   return JSON.stringify({ status: 'error', summary: 'opencode response contained no text parts' })
 }
+
+export const getAgents = async (opencode: OpencodeClient, directory: string) => {
+  return await opencode.app.agents({ query: { directory } })
+}
+
+export const TOOL_KEYS = [
+  'read',
+  'write',
+  'edit',
+  'bash',
+  'grep',
+  'glob',
+  'list',
+  'patch',
+  'todowrite',
+  'todoread',
+  'webfetch'
+] as const
+
+type ToolKey = (typeof TOOL_KEYS)[number]
+
+export type ToolOptions = Partial<Record<ToolKey, boolean>>
+
+export const createAgentViaMarkdown = async (
+  directory: string,
+  name: string,
+  model: string,
+  instructions: string,
+  tools?: ToolOptions
+) => {
+  const [providerID, modelID] = model.split('/')
+
+  const agentsDir = path.join(directory, '.opencode', 'agent')
+  await fs.promises.mkdir(agentsDir, { recursive: true })
+
+  const filename = `${name.replace(/[^a-z0-9-_.]/gi, '-').toLowerCase()}.md`
+  const filePath = path.join(agentsDir, filename)
+
+  const exists = await fs.promises
+    .access(filePath)
+    .then(() => true)
+    .catch(() => false)
+
+  if (exists) {
+    return { filePath }
+  }
+
+  const frontmatterLines: string[] = [
+    '---',
+    `description: ${name}`,
+    'mode: primary',
+    `model: ${providerID}/${modelID}`,
+    'tools:'
+  ]
+
+  for (const key of TOOL_KEYS) {
+    const val = tools && typeof tools[key] === 'boolean' ? tools[key] : false
+    frontmatterLines.push(`  ${key}: ${val ? 'true' : 'false'}`)
+  }
+
+  frontmatterLines.push('permission:')
+
+  for (const key of ['edit', 'bash', 'webfetch']) {
+    const val = tools && (tools as any)[key] ? 'allow' : 'deny'
+    frontmatterLines.push(`  ${key}: ${val}`)
+  }
+
+  frontmatterLines.push('---', '', instructions)
+
+  await fs.promises.writeFile(filePath, frontmatterLines.join('\n'))
+
+  // hack to force opencode to pick up new config
+  closeOpencodeServer()
+
+  return { filePath }
+}
+
+export type AgentConfig = {
+  description?: string
+  mode: 'primary' | 'subagent'
+  model: string
+  prompt: string
+  temperature?: number
+  tools: ToolOptions
+  permission: Record<string, 'allow' | 'ask' | 'deny'>
+}
+
+export type OpencodeConfig = {
+  $schema: 'https://opencode.ai/config.json'
+  agent?: Record<string, AgentConfig>
+}
+
+/** alternative API using opencode.json */
+export const createAgentViaConfig = async (
+  directory: string,
+  name: string,
+  model: string,
+  instructions: string,
+  tools?: ToolOptions
+) => {
+  const [providerID, modelID] = model.split('/')
+
+  const configPath = path.join(directory, 'opencode.json')
+  let config: OpencodeConfig = { $schema: 'https://opencode.ai/config.json' }
+  try {
+    const raw = await fs.promises.readFile(configPath, 'utf8')
+    config = JSON.parse(raw)
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') {
+      throw err
+    }
+    // missing config is fine; we'll create one
+    config = { $schema: 'https://opencode.ai/config.json' }
+  }
+
+  // ensure agent map exists
+  if (typeof config.agent !== 'object' || config.agent === null) {
+    config.agent = {}
+  }
+
+  // If agent already exists, leave it untouched
+  if (config.agent?.[name]) {
+    return { configPath }
+  }
+
+  const agentConfig: AgentConfig = {
+    description: name,
+    mode: 'primary',
+    model: `${providerID}/${modelID}`,
+    prompt: instructions,
+    tools: {},
+    permission: {}
+  }
+
+  for (const key of TOOL_KEYS) {
+    agentConfig.tools[key] = tools && typeof tools[key] === 'boolean' ? tools[key] : false
+    if (key === 'edit' || key === 'bash' || key === 'webfetch')
+      agentConfig.permission[key] = tools && tools[key] ? 'allow' : 'deny'
+  }
+
+  config.agent[name] = agentConfig
+
+  await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8')
+
+  // hack to force opencode to pick up new config
+  closeOpencodeServer()
+
+  return { configPath }
+}
+
+export const createAgent = createAgentViaMarkdown

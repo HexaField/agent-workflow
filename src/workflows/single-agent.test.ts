@@ -34,23 +34,11 @@ describe('Single agent loop', () => {
   opencodeTestHooks()
 
   it('creates provenance and runs at least one agent turn', async () => {
-    const sessionDir = path.join(os.tmpdir(), `.tests/single-agent-${Date.now()}`)
+    const sessionDir = path.join(os.tmpdir(), `${Date.now()}-${Math.random().toString(16).slice(2)}`)
     const exists = commandExists('opencode')
     expect(exists, "Required CLI 'opencode' not found on PATH").toBe(true)
 
     fs.mkdirSync(sessionDir, { recursive: true })
-
-    const opencodeConfig = {
-      $schema: 'https://opencode.ai/config.json',
-      permission: {
-        edit: 'allow',
-        bash: 'allow',
-        webfetch: 'allow',
-        doom_loop: 'allow',
-        external_directory: 'deny'
-      }
-    }
-    fs.writeFileSync(path.join(sessionDir, 'opencode.json'), JSON.stringify(opencodeConfig, null, 2))
 
     initGitRepo(sessionDir)
 
@@ -83,15 +71,19 @@ describe('Single agent loop', () => {
       return JSON.parse(fs.readFileSync(file, 'utf8')) as RunMeta
     })
 
+    expect(logs.length).toBeGreaterThan(0)
+
+    const namespacedAgentName = `${singleAgentWorkflowDefinition.id}.agent`
+
     for (const entry of logs) {
       expect(typeof entry.id).toBe('string')
 
       expect(entry.agents.length).toBe(1)
-      const agent = entry.agents.find((a) => a.role === 'agent')
+      const agent = entry.agents.find((a) => a.role === namespacedAgentName)
       expect(agent?.sessionId).toBeDefined()
 
       expect(entry.log.length).toBeGreaterThan(0)
-      const agentMessages = entry.log.filter((e) => e.role === 'agent')
+      const agentMessages = entry.log.filter((e) => e.role === namespacedAgentName)
       expect(agentMessages.length).toBeGreaterThan(0)
       const userMessages = entry.log.filter((e) => e.role === 'user')
       expect(userMessages.length).toBeGreaterThan(0)
@@ -103,7 +95,7 @@ describe('Single agent loop', () => {
       ).toBe(true)
     }
 
-    const diffs: FileDiff[] = await getWorkflowRunDiff(agentRun.runId, sessionDir, { role: 'agent' })
+    const diffs: FileDiff[] = await getWorkflowRunDiff(agentRun.runId, sessionDir, { role: namespacedAgentName })
     expect(diffs.length).toBeGreaterThan(0)
     const readmeDiff = diffs.find((diff) => diff.file.toLowerCase().includes('readme.md'))
     expect(readmeDiff).toBeTruthy()
