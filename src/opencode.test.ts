@@ -5,7 +5,7 @@ import {
   getMessageDiff,
   getOpencodeClient,
   promptSession
-} from '@hexafield/agent-workflow/opencode'
+} from '@hexafield/agent-workflow'
 import { Part, TextPart } from '@opencode-ai/sdk'
 import { execSync } from 'child_process'
 import fs from 'fs'

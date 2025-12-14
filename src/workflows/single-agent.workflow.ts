@@ -1,4 +1,4 @@
-import type { AgentWorkflowDefinition } from '../workflow-schema'
+import { validateWorkflowDefinition, type AgentWorkflowDefinition } from '../workflow-schema'
 
 export const singleAgentWorkflowDocument = {
   $schema: 'https://hyperagent.dev/schemas/agent-workflow.json',
@@ -41,6 +41,7 @@ export const singleAgentWorkflowDocument = {
       start: 'agent',
       steps: [
         {
+          type: 'agent',
           key: 'agent',
           role: 'agent' as const,
           prompt: ['Primary task:\n{{user.instructions}}'],
@@ -61,3 +62,5 @@ export const singleAgentWorkflowDocument = {
     }
   }
 } as const satisfies AgentWorkflowDefinition
+
+export const singleAgentWorkflowDefinition = validateWorkflowDefinition(singleAgentWorkflowDocument)

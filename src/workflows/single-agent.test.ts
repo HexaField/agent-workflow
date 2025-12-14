@@ -1,6 +1,4 @@
-import { getWorkflowRunDiff, runAgentWorkflow } from '@hexafield/agent-workflow/agent-orchestrator'
-import { RunMeta } from '@hexafield/agent-workflow/provenance'
-import { singleAgentWorkflowDefinition } from '@hexafield/agent-workflow/workflows'
+import { getWorkflowRunDiff, runAgentWorkflow, RunMeta, singleAgentWorkflowDefinition } from '@hexafield/agent-workflow'
 import type { FileDiff } from '@opencode-ai/sdk'
 import { execSync, spawnSync } from 'child_process'
 import fs from 'fs'

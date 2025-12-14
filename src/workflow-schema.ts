@@ -101,7 +101,62 @@ const workflowTransitionSchema = z
     message: 'Outcome transitions must specify a reason.'
   })
 
-const workflowStepSchema = z.object({
+const workflowSessionRoleSchema = z.object({
+  role: z.string().min(1),
+  nameTemplate: z.string().optional()
+})
+
+const workflowRoleDefinitionSchema = z.object({
+  systemPrompt: z.string().min(1),
+  parser: z.string(),
+  tools: z
+    .object(Object.fromEntries((TOOL_KEYS as readonly string[]).map((k) => [k, z.boolean().optional()])))
+    .optional()
+})
+
+const workflowParserJsonSchema: z.ZodType<WorkflowParserJsonSchemaDraft> = z.lazy(
+  () =>
+    z.union([
+      z.object({
+        type: z.literal('unknown'),
+        default: z.any().optional()
+      }),
+      z.object({
+        type: z.literal('string'),
+        enum: z.array(z.string()).min(1).optional(),
+        default: z.string().optional(),
+        minLength: z.number().int().min(0).optional(),
+        maxLength: z.number().int().min(0).optional()
+      }),
+      z.object({
+        type: z.literal('number'),
+        enum: z.array(z.number()).min(1).optional(),
+        minimum: z.number().optional(),
+        maximum: z.number().optional(),
+        integer: z.boolean().optional(),
+        default: z.number().optional()
+      }),
+      z.object({
+        type: z.literal('boolean'),
+        default: z.boolean().optional()
+      }),
+      z.object({
+        type: z.literal('array'),
+        items: workflowParserJsonSchema,
+        default: z.array(z.any()).optional()
+      }),
+      z.object({
+        type: z.literal('object'),
+        properties: z.record(z.string(), workflowParserJsonSchema),
+        required: z.array(z.string()).optional(),
+        additionalProperties: z.boolean().optional(),
+        default: z.any().optional()
+      })
+    ]) as z.ZodType<WorkflowParserJsonSchemaDraft>
+)
+
+const workflowAgentStepSchema = z.object({
+  type: z.literal('agent').optional(),
   key: z.string().min(1),
   role: z.string().min(1),
   prompt: z.array(z.string()).min(1),
@@ -110,6 +165,21 @@ const workflowStepSchema = z.object({
   transitions: z.array(workflowTransitionSchema).optional(),
   exits: z.array(workflowTransitionSchema).optional()
 })
+
+const workflowCliStepSchema = z.object({
+  type: z.literal('cli'),
+  key: z.string().min(1),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  argsSchema: workflowParserJsonSchema.optional(),
+  cwd: z.string().optional(),
+  next: z.string().min(1).optional(),
+  stateUpdates: z.record(z.string(), z.string()).optional(),
+  transitions: z.array(workflowTransitionSchema).optional(),
+  exits: z.array(workflowTransitionSchema).optional()
+})
+
+const workflowStepSchema = z.union([workflowCliStepSchema, workflowAgentStepSchema])
 
 const workflowRoundSchema = z
   .object({
@@ -167,60 +237,6 @@ const workflowRoundSchema = z
       validateTransitions(step.exits, 'exits')
     })
   })
-
-const workflowSessionRoleSchema = z.object({
-  role: z.string().min(1),
-  nameTemplate: z.string().optional()
-})
-
-const workflowRoleDefinitionSchema = z.object({
-  systemPrompt: z.string().min(1),
-  parser: z.string(),
-  tools: z
-    .object(Object.fromEntries((TOOL_KEYS as readonly string[]).map((k) => [k, z.boolean().optional()])))
-    .optional()
-})
-
-const workflowParserJsonSchema: z.ZodType<WorkflowParserJsonSchemaDraft> = z.lazy(
-  () =>
-    z.union([
-      z.object({
-        type: z.literal('unknown'),
-        default: z.any().optional()
-      }),
-      z.object({
-        type: z.literal('string'),
-        enum: z.array(z.string()).min(1).optional(),
-        default: z.string().optional(),
-        minLength: z.number().int().min(0).optional(),
-        maxLength: z.number().int().min(0).optional()
-      }),
-      z.object({
-        type: z.literal('number'),
-        enum: z.array(z.number()).min(1).optional(),
-        minimum: z.number().optional(),
-        maximum: z.number().optional(),
-        integer: z.boolean().optional(),
-        default: z.number().optional()
-      }),
-      z.object({
-        type: z.literal('boolean'),
-        default: z.boolean().optional()
-      }),
-      z.object({
-        type: z.literal('array'),
-        items: workflowParserJsonSchema,
-        default: z.array(z.any()).optional()
-      }),
-      z.object({
-        type: z.literal('object'),
-        properties: z.record(z.string(), workflowParserJsonSchema),
-        required: z.array(z.string()).optional(),
-        additionalProperties: z.boolean().optional(),
-        default: z.any().optional()
-      })
-    ]) as z.ZodType<WorkflowParserJsonSchemaDraft>
-)
 
 const workflowRolesSchema = z
   .record(z.string(), workflowRoleDefinitionSchema)
@@ -377,4 +393,9 @@ export function workflowParserSchemaToZod<const TSchema extends WorkflowParserJs
       return exhaustive
     }
   }
+}
+
+export function validateWorkflowDefinition<const TSource extends AgentWorkflowDefinition>(source: TSource): TSource {
+  workflowDefinitionSchema.parse(source as AgentWorkflowDefinitionDraft)
+  return source
 }

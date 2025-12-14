@@ -1,6 +1,7 @@
 import type { FileDiff, Session } from '@opencode-ai/sdk'
 import fs from 'fs'
 import path from 'path'
+import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { z } from 'zod'
 import { AgentRunResponse, AgentStreamCallback, invokeStructuredJsonCall, parseJsonPayload } from './agent'
@@ -80,28 +81,44 @@ type BootstrapStepDefinition<TDefinition extends AgentWorkflowDefinition> =
     ? NonNullable<TDefinition['flow']['bootstrap']>
     : never
 
-type StepDefinitionByKey<TDefinition extends AgentWorkflowDefinition, TKey extends RoundStepKey<TDefinition>> = Extract<
-  RoundStepDefinition<TDefinition>,
-  { key: TKey }
->
+type CliStepDefinition = Extract<WorkflowStepDefinition, { type: 'cli' }>
+type AgentStepDefinition = Exclude<WorkflowStepDefinition, { type: 'cli' }>
 
 type ParserOutputForRole<TDefinition extends AgentWorkflowDefinition, Role extends WorkflowRoleName<TDefinition>> =
   ParserSchemaForRole<TDefinition, Role> extends WorkflowParserJsonSchema
     ? WorkflowParserJsonOutput<ParserSchemaForRole<TDefinition, Role>>
     : unknown
 
+type AgentStepTurn<
+  TDefinition extends AgentWorkflowDefinition,
+  TStep extends AgentStepDefinition
+> = {
+  key: TStep['key']
+  role: TStep['role']
+  round: number
+  raw: string
+  parsed: ParserOutputForRole<TDefinition, TStep['role'] & WorkflowRoleName<TDefinition>>
+  type: 'agent'
+}
+
+type CliStepTurn = {
+  key: string
+  round: number
+  raw: string
+  parsed: {
+    stdout: string
+    stderr: string
+    exitCode: number
+    args: unknown
+  }
+  type: 'cli'
+  command: string
+}
+
 type WorkflowTurnForStep<
   TDefinition extends AgentWorkflowDefinition,
   TStep extends WorkflowStepDefinition
-> = TStep extends WorkflowStepDefinition
-  ? {
-      key: TStep['key']
-      role: TStep['role']
-      round: number
-      raw: string
-      parsed: ParserOutputForRole<TDefinition, TStep['role'] & WorkflowRoleName<TDefinition>>
-    }
-  : never
+> = TStep extends CliStepDefinition ? CliStepTurn : AgentStepTurn<TDefinition, Extract<TStep, AgentStepDefinition>>
 
 type RoundStepTurn<TDefinition extends AgentWorkflowDefinition> = WorkflowTurnForStep<
   TDefinition,
@@ -219,9 +236,9 @@ async function ensureWorkflowSessions(
   return sessions
 }
 
-type StepDictionary<TDefinition extends AgentWorkflowDefinition> = Partial<{
-  [Key in RoundStepKey<TDefinition>]: WorkflowTurnForStep<TDefinition, StepDefinitionByKey<TDefinition, Key>>
-}>
+type StepDictionary<TDefinition extends AgentWorkflowDefinition> = Partial<
+  Record<RoundStepKey<TDefinition>, RoundStepTurn<TDefinition>>
+>
 
 type TemplateScope<TDefinition extends AgentWorkflowDefinition> = {
   user: Record<string, unknown>
@@ -346,9 +363,8 @@ const initializeState = <TDefinition extends AgentWorkflowDefinition>(
   return state
 }
 
-const initializeUserInputs = <TDefinition extends AgentWorkflowDefinition>(
-  userDefs: Record<string, WorkflowParserJsonSchema> | undefined,
-  scope: TemplateScope<TDefinition>
+const initializeUserInputs = (
+  userDefs: Record<string, WorkflowParserJsonSchema> | undefined
 ): Record<string, unknown> => {
   if (!userDefs) return {}
   const user: Record<string, unknown> = {}
@@ -376,11 +392,67 @@ type StepExecutionContext<TDefinition extends AgentWorkflowDefinition> = {
   onStream?: AgentStreamCallback
 }
 
-const executeStep = async <TDefinition extends AgentWorkflowDefinition, TStep extends WorkflowStepDefinition>(
+const coerceTemplateValue = (value: string): unknown => {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return value
+  }
+}
+
+const renderCliArgs = <TDefinition extends AgentWorkflowDefinition>(
+  args: ReadonlyArray<string> | undefined,
+  scope: TemplateScope<TDefinition>,
+  schema: WorkflowParserJsonSchema | undefined
+): unknown => {
+  const rendered = (args ?? []).map((arg) => renderTemplateString(arg, scope)).map(coerceTemplateValue)
+  if (!schema) return rendered
+  const parser = workflowParserSchemaToZod(schema)
+  return parser.parse(rendered)
+}
+
+const executeCliStep = async <TDefinition extends AgentWorkflowDefinition>(
+  step: CliStepDefinition,
+  scope: TemplateScope<TDefinition>,
+  ctx: StepExecutionContext<TDefinition>
+): Promise<CliStepTurn> => {
+  const args = renderCliArgs(step.args, scope, step.argsSchema)
+  const argv = Array.isArray(args) ? args.map((v) => String(v)) : [String(args)]
+  const cwd = step.cwd ? renderTemplateString(step.cwd, scope) : ctx.directory
+
+  const spawned = spawn(step.command, argv, { cwd, shell: false })
+  let stdout = ''
+  let stderr = ''
+
+  spawned.stdout?.on('data', (chunk) => {
+    stdout += chunk.toString()
+  })
+  spawned.stderr?.on('data', (chunk) => {
+    stderr += chunk.toString()
+  })
+
+  const exitCode: number = await new Promise((resolve, reject) => {
+    spawned.on('error', (err) => reject(err))
+    spawned.on('close', (code) => resolve(code ?? -1))
+  })
+
+  return {
+    key: step.key,
+    round: scope.round,
+    raw: stdout,
+    parsed: { stdout, stderr, exitCode, args },
+    type: 'cli',
+    command: step.command
+  }
+}
+
+const executeAgentStep = async <TDefinition extends AgentWorkflowDefinition, TStep extends AgentStepDefinition>(
   step: TStep,
   scope: TemplateScope<TDefinition>,
   ctx: StepExecutionContext<TDefinition>
-): Promise<WorkflowTurnForStep<TDefinition, TStep>> => {
+): Promise<AgentStepTurn<TDefinition, TStep>> => {
   const roleConfig = ctx.definition.roles[step.role]
   if (!roleConfig) {
     throw new Error(`Workflow step ${step.role} missing role configuration.`)
@@ -415,8 +487,20 @@ const executeStep = async <TDefinition extends AgentWorkflowDefinition, TStep ex
     role: step.role,
     round: scope.round,
     raw,
-    parsed
-  } as WorkflowTurnForStep<TDefinition, TStep>
+    parsed,
+    type: 'agent'
+  } as AgentStepTurn<TDefinition, TStep>
+}
+
+const executeStep = async <TDefinition extends AgentWorkflowDefinition, TStep extends WorkflowStepDefinition>(
+  step: TStep,
+  scope: TemplateScope<TDefinition>,
+  ctx: StepExecutionContext<TDefinition>
+): Promise<WorkflowTurnForStep<TDefinition, TStep>> => {
+  if ((step as CliStepDefinition).type === 'cli') {
+    return (await executeCliStep(step as CliStepDefinition, scope, ctx)) as WorkflowTurnForStep<TDefinition, TStep>
+  }
+  return (await executeAgentStep(step as AgentStepDefinition, scope, ctx)) as WorkflowTurnForStep<TDefinition, TStep>
 }
 
 const applyStateUpdates = <TDefinition extends AgentWorkflowDefinition>(
@@ -665,7 +749,7 @@ export async function runAgentWorkflow<TDefinition extends AgentWorkflowDefiniti
     }
 
     // initialize user inputs from workflow definition, then overlay runtime inputs
-    const initializedUser = initializeUserInputs<TDefinition>(definition.user as any, baseScope)
+    const initializedUser = initializeUserInputs(definition.user as any)
 
     // If workflow declares a `user` schema, build a Zod parser to validate
     // runtime-provided `options.user`. Use `.partial()` so callers may omit

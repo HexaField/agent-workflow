@@ -1,6 +1,9 @@
-import { getWorkflowRunDiff, runAgentWorkflow } from '@hexafield/agent-workflow/agent-orchestrator'
-import { RunMeta } from '@hexafield/agent-workflow/provenance'
-import { verifierWorkerWorkflowDefinition } from '@hexafield/agent-workflow/workflows'
+import {
+  getWorkflowRunDiff,
+  runAgentWorkflow,
+  RunMeta,
+  verifierWorkerWorkflowDefinition
+} from '@hexafield/agent-workflow'
 import type { FileDiff } from '@opencode-ai/sdk'
 import { execSync, spawnSync } from 'child_process'
 import fs from 'fs'
@@ -72,9 +75,18 @@ describe('Verifier/worker collaboration loop', () => {
     const firstRound = result.rounds[0]
     const workerStep = firstRound.steps.worker
     const verifierStep = firstRound.steps.verifier
-    expect(workerStep?.parsed.plan.trim().length).toBeGreaterThan(0)
-    expect(workerStep?.parsed.work.trim().length).toBeGreaterThan(0)
-    expect(verifierStep?.parsed.instructions.trim().length).toBeGreaterThan(0)
+    expect(workerStep?.type).toBe('agent')
+    if (workerStep?.type === 'agent') {
+      const parsed = workerStep.parsed as { plan?: string; work?: string }
+      expect(parsed.plan?.trim().length).toBeGreaterThan(0)
+      expect(parsed.work?.trim().length).toBeGreaterThan(0)
+    }
+
+    expect(verifierStep?.type).toBe('agent')
+    if (verifierStep?.type === 'agent') {
+      const parsed = verifierStep.parsed as { instructions?: string }
+      expect(parsed.instructions?.trim().length).toBeGreaterThan(0)
+    }
 
     expect(['approved', 'failed', 'max-rounds']).toContain(result.outcome)
 

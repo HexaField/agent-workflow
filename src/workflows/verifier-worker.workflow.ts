@@ -1,4 +1,4 @@
-import type { AgentWorkflowDefinition } from '../workflow-schema'
+import { validateWorkflowDefinition, type AgentWorkflowDefinition } from '../workflow-schema'
 
 export const verifierWorkerWorkflowDocument = {
   $schema: 'https://hyperagent.dev/schemas/agent-workflow.json',
@@ -82,6 +82,7 @@ export const verifierWorkerWorkflowDocument = {
   },
   flow: {
     bootstrap: {
+      type: 'agent',
       key: 'bootstrap',
       role: 'verifier' as const,
       prompt: [
@@ -97,6 +98,7 @@ export const verifierWorkerWorkflowDocument = {
       start: 'worker',
       steps: [
         {
+          type: 'agent',
           key: 'worker',
           role: 'worker' as const,
           next: 'verifier',
@@ -115,6 +117,7 @@ export const verifierWorkerWorkflowDocument = {
           ]
         },
         {
+          type: 'agent',
           key: 'verifier',
           role: 'verifier' as const,
           prompt: [
@@ -148,3 +151,5 @@ export const verifierWorkerWorkflowDocument = {
     }
   }
 } as const satisfies AgentWorkflowDefinition
+
+export const verifierWorkerWorkflowDefinition = validateWorkflowDefinition(verifierWorkerWorkflowDocument)

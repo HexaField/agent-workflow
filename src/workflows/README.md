@@ -1,6 +1,6 @@
 # Agent Workflow Definitions
 
-This package hosts the runtime and schemas that power Hyperagent's declarative agent workflows. Workflows are described as JSON (or JSON-compatible `as const` objects) that the orchestrator can load, validate with Zod, and execute deterministically. Each document describes the roles involved, how sessions are created, shared state, prompt templates, and the transitions that determine when a run should advance, exit, or emit a final outcome.
+This package hosts the runtime and schemas that power Hyperagent's declarative agent workflows. Workflows are described as JSON (or JSON-compatible `as const` objects) that the orchestrator can load, validate with Zod, and execute deterministically. Each document describes the roles involved, how sessions are created, shared state, prompt templates, the step kinds (agent or CLI), and the transitions that determine when a run should advance, exit, or emit a final outcome.
 
 ---
 
@@ -104,6 +104,11 @@ Notes:
 ### Flow Definition
 
 `flow` contains an optional `bootstrap` step and a required `round` object.
+
+#### Step kinds
+
+- Agent step: `type: "agent"` (default when omitted). Fields: `key`, `role`, `prompt`, optional `next`, `stateUpdates`, `transitions`, `exits`.
+- CLI step: `type: "cli"`. Fields: `key`, `command`, optional `args` (templated strings), optional `argsSchema` (compact JSON-schema-like validator for args), optional `cwd`, plus the same `next` / `stateUpdates` / `transitions` / `exits` fields. CLI steps emit `parsed = { stdout, stderr, exitCode, args }` so transitions and templating can respond to command results.
 
 #### Bootstrap
 

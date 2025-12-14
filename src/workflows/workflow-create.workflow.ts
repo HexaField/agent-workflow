@@ -1,4 +1,4 @@
-import type { AgentWorkflowDefinition } from '../workflow-schema'
+import { validateWorkflowDefinition, type AgentWorkflowDefinition } from '../workflow-schema'
 
 // Embed the workflows API documentation inline so the prompt is self-contained.
 const workflowsReadme = `# Workflow Document Structure
@@ -109,6 +109,11 @@ In the example above \`instructions\` is optional (has default) while \`priority
 \`flow\` contains an optional \`bootstrap\` step and a required \`round\` object.
 
 A \`round\` defines the repeating sequence of steps, transitions, and a default outcome. Steps are ordered and may define \`prompt\` sections, \`stateUpdates\`, \`transitions\`, and \`exits\`.
+
+#### Step kinds
+
+- Agent step: \`type: "agent"\` (default when omitted). Fields: \`key\`, \`role\`, \`prompt\`, optional \`next\`, \`stateUpdates\`, \`transitions\`, \`exits\`.
+- CLI step: \`type: "cli"\`. Fields: \`key\`, \`command\`, optional \`args\` (templated strings), optional \`argsSchema\` (compact JSON-schema-like validator for args), optional \`cwd\`, plus the same \`next\` / \`stateUpdates\` / \`transitions\` / \`exits\` fields. CLI steps emit \`parsed = { stdout, stderr, exitCode, args }\` so transitions and templating can respond to command results.
 
 ### Template Rendering
 
@@ -248,6 +253,7 @@ export const workflowCreateWorkflowDocument = {
       start: 'createWorkflow',
       steps: [
         {
+          type: 'agent',
           key: 'createWorkflow',
           role: 'creator' as const,
           prompt: [
@@ -274,4 +280,4 @@ export const workflowCreateWorkflowDocument = {
   }
 } as const satisfies AgentWorkflowDefinition
 
-export default workflowCreateWorkflowDocument
+export const workflowCreateWorkflowDefinition = validateWorkflowDefinition(workflowCreateWorkflowDocument)

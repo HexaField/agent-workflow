@@ -13,7 +13,6 @@
     "./opencode": "./dist/opencode.js",
     "./provenance": "./dist/provenance.js",
     "./workflow-schema": "./dist/workflow-schema.js",
-    "./workflows": "./dist/workflows/index.js",
     "./workflows/*": "./dist/workflows/*.js",
     "./package.json": "./package.json"
   },

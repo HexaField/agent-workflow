@@ -13,7 +13,6 @@ const entries = [
   'src/opencode.ts',
   'src/provenance.ts',
   'src/workflow-schema.ts',
-  'src/workflows/index.ts',
   ...fg.sync('src/workflows/*.workflow.ts')
 ]
 
