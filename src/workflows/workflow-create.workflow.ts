@@ -61,6 +61,26 @@ Example parser and role:
 
 - \`systemPrompt\` is fed directly to the LLM whenever the role executes a step.
 - \`parser\` references one of the parser definitions declared under \`parsers\`. New workflows can introduce bespoke parsers without changing the runtime.
+ 
+### Tool Permission API
+
+Each role can include a compact \`tools\` object to grant runtime capabilities. Keys are booleans; omitted keys default to \`false\`.
+
+Common keys: \`read\`, \`write\`, \`edit\`, \`bash\`, \`grep\`, \`glob\`, \`list\`, \`patch\`, \`todowrite\`, \`todoread\`, \`webfetch\`.
+
+Example:
+
+\`\`\`jsonc
+"roles": {
+  "search": {
+    "systemPrompt": "...",
+    "parser": "search",
+    "tools": { "webfetch": true }
+  }
+}
+\`\`\`
+
+Note: The orchestrator enforces these flags at runtime — grant only the capabilities a role needs.
 
 ### User inputs
 

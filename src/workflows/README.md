@@ -60,6 +60,43 @@ Define parser shapes in `parsers` using a compact JSON schema that supports `str
 - `systemPrompt` is fed directly to the LLM whenever the role executes a step.
 - `parser` references one of the parser definitions declared under `parsers`. New workflows can introduce bespoke parsers without changing the runtime.
 
+### Tool Permission API
+
+Workflows may declare a per-role `tools` permission object that the orchestrator consults before enabling runtime tool capabilities for that role. Each key is a boolean that grants or denies access to a specific runtime capability.
+
+Common tool keys:
+
+- `read`: allow filesystem read operations.
+- `write`: allow filesystem write operations.
+- `edit`: allow programmatic file edits/patches.
+- `bash`: allow running shell commands.
+- `grep`: allow workspace text search operations.
+- `glob`: allow file globbing queries.
+- `list`: allow directory listing operations.
+- `patch`: allow the apply-patch (editor) API.
+- `todowrite` / `todoread`: allow the managed todo-list tool's read/write operations.
+- `webfetch`: allow fetching external web pages.
+
+Example role entry with explicit tool permissions:
+
+```jsonc
+"roles": {
+  "search": {
+    "systemPrompt": "...",
+    "parser": "search",
+    "tools": {
+      "webfetch": true
+    }
+  }
+}
+```
+
+Notes:
+
+- Omitted keys are treated as `false` (denied) by default; the orchestrator can be configured differently in privileged environments.
+- The orchestrator enforces these permissions at runtime — roles without the appropriate tool flags will not be able to perform those actions.
+- Keep tool grants minimal for safety: prefer granting only the exact capabilities a role needs.
+
 ### Shared State
 
 `state.initial` is an object whose values are template strings rendered once at run start. Rendered values are stored in the state bag and can be retrieved inside prompts or transitions via `{{state.key}}`.
