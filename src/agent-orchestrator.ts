@@ -115,6 +115,8 @@ type CliStepTurn = {
     stderr: string
     exitCode: number
     args: unknown
+    stdoutBuffer?: Buffer
+    stderrBuffer?: Buffer
   }
   type: 'cli'
   command: string
@@ -470,6 +472,10 @@ const executeCliStep = async <TDefinition extends AgentWorkflowDefinition>(
   ctx: StepExecutionContext<TDefinition>
 ): Promise<CliStepTurn> => {
   const args = renderCliArgs(step.args, scope, step.argsSchema)
+  const captureMode = step.capture ?? 'text'
+  const captureBuffer = captureMode === 'buffer' || captureMode === 'both'
+  const captureText = captureMode === 'text' || captureMode === 'both'
+  const stdinValue = step.stdinFrom ? getValueAtPath(scope, step.stdinFrom) : undefined
   if (ctx.validateCliArgs) {
     const isValid = await ctx.validateCliArgs(args, step)
     if (!isValid) {
@@ -482,24 +488,53 @@ const executeCliStep = async <TDefinition extends AgentWorkflowDefinition>(
   const spawned = spawn(step.command, argv, { cwd, shell: false })
   let stdout = ''
   let stderr = ''
+  const stdoutChunks: Buffer[] = []
+  const stderrChunks: Buffer[] = []
 
   spawned.stdout?.on('data', (chunk) => {
-    stdout += chunk.toString()
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    if (captureBuffer) stdoutChunks.push(buffer)
+    if (captureText) stdout += buffer.toString()
   })
   spawned.stderr?.on('data', (chunk) => {
-    stderr += chunk.toString()
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    if (captureBuffer) stderrChunks.push(buffer)
+    if (captureText) stderr += buffer.toString()
   })
+
+  if (stdinValue !== undefined && spawned.stdin) {
+    if (typeof stdinValue === 'string') {
+      spawned.stdin.end(stdinValue)
+    } else if (stdinValue instanceof Uint8Array) {
+      spawned.stdin.end(Buffer.from(stdinValue))
+    } else {
+      spawned.stdin.end(String(stdinValue))
+    }
+  }
 
   const exitCode: number = await new Promise((resolve, reject) => {
     spawned.on('error', (err) => reject(err))
     spawned.on('close', (code) => resolve(code ?? -1))
   })
 
+  const stdoutBuffer = captureBuffer ? Buffer.concat(stdoutChunks) : undefined
+  const stderrBuffer = captureBuffer ? Buffer.concat(stderrChunks) : undefined
+  if (!captureText && stdoutBuffer) {
+    stdout = stdoutBuffer.toString()
+  }
+  if (!captureText && stderrBuffer) {
+    stderr = stderrBuffer.toString()
+  }
+
+  const parsed: CliStepTurn['parsed'] = { stdout, stderr, exitCode, args }
+  if (stdoutBuffer) parsed.stdoutBuffer = stdoutBuffer
+  if (stderrBuffer) parsed.stderrBuffer = stderrBuffer
+
   return {
     key: step.key,
     round: scope.round,
     raw: stdout,
-    parsed: { stdout, stderr, exitCode, args },
+    parsed,
     type: 'cli',
     command: step.command
   }

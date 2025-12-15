@@ -32,8 +32,6 @@ Top-level fields:
 }
 \`\`\`
 
-- \`role\` must match a key in the \`roles\` map.
-- \`nameTemplate\` is optional and can include \`{{runId}}\` replacements via the same template engine used elsewhere.
 
 ### Roles & Parsers
 
@@ -59,8 +57,6 @@ Example parser and role:
 }
 \`\`\`
 
-- \`systemPrompt\` is fed directly to the LLM whenever the role executes a step.
-- \`parser\` references one of the parser definitions declared under \`parsers\`. New workflows can introduce bespoke parsers without changing the runtime.
  
 ### Tool Permission API
 
@@ -86,8 +82,6 @@ Note: The orchestrator enforces these flags at runtime — grant only the capabi
 
 Workflows may declare a \`user\` map that describes expected runtime inputs. This map uses the same compact JSON-schema-like parser shape used for \`parsers\` and allows specifying type and an optional \`default\`.
 
-- Keys that include a \`default\` are optional at runtime; keys without a \`default\` are required.
-- At runtime these schemas are used to validate and coerce the \`user\` object supplied to the orchestrator. Defaults are applied when a key is omitted.
 
 Example:
 
@@ -113,7 +107,7 @@ A \`round\` defines the repeating sequence of steps, transitions, and a default 
 #### Step kinds
 
 - Agent step: \`type: "agent"\` (default when omitted). Fields: \`key\`, \`role\`, \`prompt\`, optional \`next\`, \`stateUpdates\`, \`transitions\`, \`exits\`.
-- CLI step: \`type: "cli"\`. Fields: \`key\`, \`command\`, optional \`args\` (templated strings), optional \`argsSchema\` (compact JSON-schema-like validator for args), optional \`cwd\`, plus the same \`next\` / \`stateUpdates\` / \`transitions\` / \`exits\` fields. CLI steps emit \`parsed = { stdout, stderr, exitCode, args }\` so transitions and templating can respond to command results.
+- CLI step: \`type: "cli"\`. Fields: \`key\`, \`command\`, optional \`args\` (templated strings), optional \`argsSchema\` (compact JSON-schema-like validator for args), optional \`cwd\`, optional \`stdinFrom\` (path expression resolved from scope, streamed into process stdin), optional \`capture\` (\`text\` | \`buffer\` | \`both\`, default \`text\`), plus the same \`next\` / \`stateUpdates\` / \`transitions\` / \`exits\` fields. CLI steps emit \`parsed = { stdout, stderr, exitCode, args, stdoutBuffer?, stderrBuffer? }\` so transitions and templating can respond to command results without touching the filesystem.
 - Workflow reference step: \`type: "workflow"\`. Fields: \`key\`, \`workflowId\`, optional \`input\` (templated object), optional \`inputSchema\` (compact JSON-schema-like validator applied after templating), optional \`next\` / \`stateUpdates\` / \`transitions\` / \`exits\`. The orchestrator resolves \`workflowId\` from a registry/resolver, runs the child workflow synchronously, and exposes a summary on the step (\`parsed.outcome\`, \`parsed.reason\`, \`parsed.runId\`, \`parsed.rounds\`).
 
 ### Template Rendering

@@ -108,7 +108,7 @@ Notes:
 #### Step kinds
 
 - Agent step: `type: "agent"` (default when omitted). Fields: `key`, `role`, `prompt`, optional `next`, `stateUpdates`, `transitions`, `exits`.
-- CLI step: `type: "cli"`. Fields: `key`, `command`, optional `args` (templated strings), optional `argsSchema` (compact JSON-schema-like validator for args), optional `cwd`, plus the same `next` / `stateUpdates` / `transitions` / `exits` fields. CLI steps emit `parsed = { stdout, stderr, exitCode, args }` so transitions and templating can respond to command results.
+- CLI step: `type: "cli"`. Fields: `key`, `command`, optional `args` (templated strings), optional `argsSchema` (compact JSON-schema-like validator for args), optional `cwd`, optional `stdinFrom` (path expression resolved from scope, streamed into process stdin), optional `capture` (`text` | `buffer` | `both`, default `text`), plus the same `next` / `stateUpdates` / `transitions` / `exits` fields. CLI steps emit `parsed = { stdout, stderr, exitCode, args, stdoutBuffer?, stderrBuffer? }` so transitions and templating can respond to command results without touching the filesystem.
 - Workflow reference step: `type: "workflow"`. Fields: `key`, `workflowId`, optional `input` (templated object), optional `inputSchema` (compact JSON-schema-like validator applied after templating), optional `next` / `stateUpdates` / `transitions` / `exits`. The orchestrator resolves `workflowId` from a registry/resolver, runs the child workflow synchronously, and exposes a summary on the step (`parsed.outcome`, `parsed.reason`, `parsed.runId`, `parsed.rounds`).
 
 #### Bootstrap

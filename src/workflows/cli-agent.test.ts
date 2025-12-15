@@ -97,6 +97,70 @@ export const cliAgentWorkflowDocument = {
 
 const cliAgentWorkflowDefinition = validateWorkflowDefinition(cliAgentWorkflowDocument)
 
+export const cliPipelineWorkflowDocument = {
+  $schema: 'https://hyperagent.dev/schemas/agent-workflow.json',
+  id: 'cli-pipeline.v1',
+  description: 'Two CLI steps that pipe binary stdout directly to stdin of the next step.',
+  model: 'github-copilot/gpt-5-mini',
+  sessions: {
+    roles: [{ role: 'runner' as const, nameTemplate: '{{runId}}-pipeline' }]
+  },
+  parsers: {
+    noop: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
+  },
+  roles: {
+    runner: {
+      systemPrompt: 'unused for CLI-only workflow',
+      parser: 'noop',
+      tools: {}
+    }
+  },
+  state: { initial: {} },
+  flow: {
+    round: {
+      start: 'produce',
+      steps: [
+        {
+          type: 'cli',
+          key: 'produce',
+          command: 'node',
+          args: ['-e', 'process.stdout.write(Buffer.from([0,1,2,3,4]))'],
+          capture: 'buffer'
+        },
+        {
+          type: 'cli',
+          key: 'pipe',
+          command: 'node',
+          args: [
+            '-e',
+            'const chunks=[];process.stdin.on("data",c=>chunks.push(c));process.stdin.on("end",()=>{const buf=Buffer.concat(chunks);process.stdout.write(buf.toString("hex"));});'
+          ],
+          stdinFrom: 'steps.produce.parsed.stdoutBuffer',
+          capture: 'both',
+          exits: [
+            {
+              condition: 'always',
+              outcome: 'completed',
+              reason: 'pipeline finished'
+            }
+          ]
+        }
+      ],
+      maxRounds: 1,
+      defaultOutcome: {
+        outcome: 'completed',
+        reason: 'CLI pipeline finished'
+      }
+    }
+  }
+} as const satisfies AgentWorkflowDefinition
+
+const cliPipelineWorkflowDefinition = validateWorkflowDefinition(cliPipelineWorkflowDocument)
+
 function commandExists(cmd: string): boolean {
   const res = spawnSync('which', [cmd])
   return res.status === 0
@@ -189,5 +253,41 @@ describe('CLI + Agent workflow', () => {
     await expect(run.result).rejects.toThrow(/rejected by validateCliArgs/)
     expect(validationSpy).toHaveBeenCalled()
     expect(fs.existsSync(path.join(sessionDir, 'cli-output.txt'))).toBe(false)
+  }, 240_000)
+
+  it('pipes binary stdout buffer into next CLI stdin', async () => {
+    const sessionDir = path.join(os.tmpdir(), `.tests/cli-agent-pipeline-${Date.now()}`)
+
+    fs.mkdirSync(sessionDir, { recursive: true })
+    initGitRepo(sessionDir)
+
+    const run = await runAgentWorkflow(cliPipelineWorkflowDefinition, {
+      user: {},
+      model,
+      sessionDir
+    })
+
+    const result = await run.result
+
+    expect(result.rounds.length).toBeGreaterThan(0)
+    const firstRound = result.rounds[0]
+    const produce = firstRound.steps.produce
+    const pipe = firstRound.steps.pipe
+
+    expect(produce?.type).toBe('cli')
+    if (produce?.type === 'cli') {
+      expect(produce.parsed.stdoutBuffer).toBeInstanceOf(Buffer)
+      expect(produce.parsed.stdoutBuffer?.equals(Buffer.from([0, 1, 2, 3, 4]))).toBe(true)
+    }
+
+    expect(pipe?.type).toBe('cli')
+    if (pipe?.type === 'cli') {
+      expect(pipe.parsed.stdout).toBe('0001020304')
+      expect(pipe.parsed.stdoutBuffer).toBeInstanceOf(Buffer)
+      // stdoutBuffer holds the bytes of the hex string produced by the second CLI step
+      expect(pipe.parsed.stdoutBuffer?.toString()).toBe('0001020304')
+      expect(pipe.parsed.stderr).toBe('')
+      expect(pipe.parsed.exitCode).toBe(0)
+    }
   }, 240_000)
 })

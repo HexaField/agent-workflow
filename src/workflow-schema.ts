@@ -173,6 +173,11 @@ const workflowCliStepSchema = z.object({
   args: z.array(z.string()).optional(),
   argsSchema: workflowParserJsonSchema.optional(),
   cwd: z.string().optional(),
+  // Optional path expression (e.g., 'steps.previous.parsed.stdoutBuffer') resolved from the runtime scope.
+  // When provided, the referenced value is streamed into the CLI process stdin without string coercion.
+  stdinFrom: z.string().optional(),
+  // How to capture CLI output. Defaults to 'text' for backward compatibility.
+  capture: z.enum(['text', 'buffer', 'both']).optional(),
   next: z.string().min(1).optional(),
   stateUpdates: z.record(z.string(), z.string()).optional(),
   transitions: z.array(workflowTransitionSchema).optional(),
