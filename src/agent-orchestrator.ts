@@ -36,6 +36,7 @@ type AgentWorkflowRunOptionsBase = {
   runID?: string
   maxRounds?: number
   onStream?: AgentStreamCallback
+  validateCliArgs?: (args: unknown, step: CliStepDefinition) => boolean | Promise<boolean>
   workflowId?: string
   workflowSource?: 'builtin' | 'user' | 'reference'
   workflowLabel?: string
@@ -417,6 +418,7 @@ type StepExecutionContext<TDefinition extends AgentWorkflowDefinition> = {
   directory: string
   runId: string
   onStream?: AgentStreamCallback
+  validateCliArgs?: AgentWorkflowRunOptionsBase['validateCliArgs']
   workflowResolver?: WorkflowResolver
   workflows?: Record<string, AgentWorkflowDefinition>
 }
@@ -468,6 +470,12 @@ const executeCliStep = async <TDefinition extends AgentWorkflowDefinition>(
   ctx: StepExecutionContext<TDefinition>
 ): Promise<CliStepTurn> => {
   const args = renderCliArgs(step.args, scope, step.argsSchema)
+  if (ctx.validateCliArgs) {
+    const isValid = await ctx.validateCliArgs(args, step)
+    if (!isValid) {
+      throw new Error(`CLI args for step ${step.key} rejected by validateCliArgs callback.`)
+    }
+  }
   const argv = Array.isArray(args) ? args.map((v) => String(v)) : [String(args)]
   const cwd = step.cwd ? renderTemplateString(step.cwd, scope) : ctx.directory
 
@@ -541,6 +549,7 @@ const executeWorkflowReferenceStep = async <TDefinition extends AgentWorkflowDef
     workflowSource: 'reference',
     workflowLabel: step.workflowId,
     onStream: ctx.onStream,
+    validateCliArgs: ctx.validateCliArgs,
     workflows: ctx.workflows,
     workflowResolver: ctx.workflowResolver
   })
@@ -911,6 +920,7 @@ export async function runAgentWorkflow<TDefinition extends AgentWorkflowDefiniti
       directory,
       runId,
       onStream: options.onStream,
+      validateCliArgs: options.validateCliArgs,
       workflows: options.workflows,
       workflowResolver: options.workflowResolver
     }

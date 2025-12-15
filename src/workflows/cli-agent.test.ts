@@ -3,7 +3,7 @@ import { execSync, spawnSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { opencodeTestHooks } from '../opencodeTestHooks'
 import { AgentWorkflowDefinition, validateWorkflowDefinition } from '../workflow-schema'
 
@@ -167,5 +167,27 @@ describe('CLI + Agent workflow', () => {
     expect(output).toContain(content)
     expect(output).toContain('cli step 1')
     expect(output).toContain('cli step 2')
+  }, 240_000)
+
+  it('throws when CLI args are rejected by validator', async () => {
+    const sessionDir = path.join(os.tmpdir(), `.tests/cli-agent-reject-${Date.now()}`)
+    const exists = commandExists('opencode')
+    expect(exists, "Required CLI 'opencode' not found on PATH").toBe(true)
+
+    fs.mkdirSync(sessionDir, { recursive: true })
+    initGitRepo(sessionDir)
+
+    const validationSpy = vi.fn().mockReturnValue(false)
+
+    const run = await runAgentWorkflow(cliAgentWorkflowDefinition, {
+      user: { content: 'blocked by validator' },
+      model,
+      sessionDir,
+      validateCliArgs: validationSpy
+    })
+
+    await expect(run.result).rejects.toThrow(/rejected by validateCliArgs/)
+    expect(validationSpy).toHaveBeenCalled()
+    expect(fs.existsSync(path.join(sessionDir, 'cli-output.txt'))).toBe(false)
   }, 240_000)
 })
