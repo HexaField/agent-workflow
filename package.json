@@ -28,6 +28,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@hexafield/jsonpath-object-transform": "^2.0.0",
     "@opencode-ai/sdk": "^1.0.152",
     "zod": "^4.1.12"
   },

@@ -110,6 +110,7 @@ A \`round\` defines the repeating sequence of steps, transitions, and a default 
 - CLI step: \`type: "cli"\`. Fields: \`key\`, \`command\`, optional \`args\` (templated string array), optional \`argsObject\` (templated map of name → string), optional \`argsSchema\` (compact JSON-schema-like validator for args), optional \`cwd\`, optional \`stdinFrom\` (path expression resolved from scope, streamed into process stdin), optional \`capture\` (\`text\` | \`buffer\` | \`both\`, default \`text\`), plus the same \`next\` / \`stateUpdates\` / \`transitions\` / \`exits\` fields. CLI steps emit \`parsed = { stdout, stderr, exitCode, args, stdoutBuffer?, stderrBuffer? }\` so transitions and templating can respond to command results without touching the filesystem. Rendered args are provided to the host as a named object (arrays become {arg0, arg1, ...}).
 - CLI execution is supplied by the host via \`runCliArgs\` (option on \`runAgentWorkflow\`); the orchestrator renders \`args\`/\`argsObject\`/\`cwd\`/\`stdinFrom\` with runtime scope and hands them to this callback so you can execute and validate arguments however you like while still receiving buffer data.
 - Workflow reference step: \`type: "workflow"\`. Fields: \`key\`, \`workflowId\`, optional \`input\` (templated object), optional \`inputSchema\` (compact JSON-schema-like validator applied after templating), optional \`next\` / \`stateUpdates\` / \`transitions\` / \`exits\`. The orchestrator resolves \`workflowId\` from a registry/resolver, runs the child workflow synchronously, and exposes a summary on the step (\`parsed.outcome\`, \`parsed.reason\`, \`parsed.runId\`, \`parsed.rounds\`).
+- Transform step: \`type: "transform"\`. Fields: \`key\`, \`template\` (object/array/string consumed by \`@hexafield/jsonpath-object-transform\`), optional \`input\` (templated object), optional \`inputSchema\` (validator applied after templating), plus the usual \`next\` / \`stateUpdates\` / \`transitions\` / \`exits\`. The transform step builds a data root of \`{ user, state, steps, bootstrap, round, maxRounds, run, input }\` and runs the JSONPath template to produce \`parsed\`; \`raw\` is the JSON string of that result. Use \`$\` to access the root, \`@\` for the current item inside array subtemplates, and arrays like \`["$.steps.cli.parsed.stdout", { value: '@' }]\` to map items.
 
 ### Template Rendering
 
@@ -119,6 +120,12 @@ Prompt sections, state initializers, \`stateUpdates\`, and transition \`reason\`
 - \`{{steps.worker.raw}}\` accesses the raw JSON emitted by a prior step within the same round.
 - \`{{parsed.instructions}}\` refers to the parsed payload of the current step.
 - Literal strings can provide fallbacks using \`||\`, e.g. \`{{parsed.instructions||state.pendingInstructions}}\`.
+
+Transform templating
+
+- The transform step does not render handlebars expressions inside the \`template\`; instead it relies on JSONPath selectors interpreted by \`@hexafield/jsonpath-object-transform\`.
+- The root object passed to JSONPath is \`{ user, state, steps, bootstrap, round, maxRounds, run, input }\`, so \`$\` points at that root. Example: \`$.steps.write.parsed.stdout\` pulls stdout from a prior CLI step; \`$.input.extra\` pulls a value derived from the step's \`input\` after optional validation.
+- When defining array templates, provide \`["<jsonpath>"]\` to collect all matches or \`["<jsonpath>", { ...subtemplate }]\` to map each match, where \`@\` refers to the current item.
 
 ### Transitions & Exits
 

@@ -1,3 +1,4 @@
+import jsonpathTransform from '@hexafield/jsonpath-object-transform'
 import type { FileDiff, Session } from '@opencode-ai/sdk'
 import fs from 'fs'
 import path from 'path'
@@ -89,7 +90,11 @@ type BootstrapStepDefinition<TDefinition extends AgentWorkflowDefinition> =
 
 type CliStepDefinition = Extract<WorkflowStepDefinition, { type: 'cli' }>
 type WorkflowReferenceStepDefinition = Extract<WorkflowStepDefinition, { type: 'workflow' }>
-type AgentStepDefinition = Exclude<WorkflowStepDefinition, { type: 'cli' } | { type: 'workflow' }>
+type TransformStepDefinition = Extract<WorkflowStepDefinition, { type: 'transform' }>
+type AgentStepDefinition = Exclude<
+  WorkflowStepDefinition,
+  { type: 'cli' } | { type: 'workflow' } | { type: 'transform' }
+>
 
 type ParserOutputForRole<TDefinition extends AgentWorkflowDefinition, Role extends WorkflowRoleName<TDefinition>> =
   ParserSchemaForRole<TDefinition, Role> extends WorkflowParserJsonSchema
@@ -165,6 +170,14 @@ type WorkflowReferenceTurn = {
   workflowId: string
 }
 
+type TransformStepTurn = {
+  key: string
+  round: number
+  raw: string
+  parsed: unknown
+  type: 'transform'
+}
+
 type WorkflowTurnForStep<
   TDefinition extends AgentWorkflowDefinition,
   TStep extends WorkflowStepDefinition
@@ -172,7 +185,9 @@ type WorkflowTurnForStep<
   ? CliStepTurn
   : TStep extends WorkflowReferenceStepDefinition
     ? WorkflowReferenceTurn
-    : AgentStepTurn<TDefinition, Extract<TStep, AgentStepDefinition>>
+    : TStep extends TransformStepDefinition
+      ? TransformStepTurn
+      : AgentStepTurn<TDefinition, Extract<TStep, AgentStepDefinition>>
 
 type RoundStepTurn<TDefinition extends AgentWorkflowDefinition> = WorkflowTurnForStep<
   TDefinition,
@@ -629,6 +644,53 @@ const executeWorkflowReferenceStep = async <TDefinition extends AgentWorkflowDef
   }
 }
 
+const executeTransformStep = async <TDefinition extends AgentWorkflowDefinition>(
+  step: TransformStepDefinition,
+  scope: TemplateScope<TDefinition>
+): Promise<TransformStepTurn> => {
+  const renderedInput = renderWorkflowInputTemplates(step.input ?? {}, scope)
+  let validatedInput = renderedInput
+  if (step.inputSchema) {
+    try {
+      validatedInput = workflowParserSchemaToZod(step.inputSchema as WorkflowParserJsonSchema).parse(renderedInput)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Invalid input for transform step ${step.key}: ${message}`)
+    }
+  }
+
+  const data = {
+    user: scope.user,
+    state: scope.state,
+    steps: scope.steps,
+    bootstrap: scope.bootstrap,
+    round: scope.round,
+    maxRounds: scope.maxRounds,
+    run: scope.run,
+    input: validatedInput
+  }
+
+  const parsed = jsonpathTransform(data, step.template)
+  let raw: string
+  if (typeof parsed === 'string') {
+    raw = parsed
+  } else {
+    try {
+      raw = JSON.stringify(parsed)
+    } catch {
+      raw = String(parsed)
+    }
+  }
+
+  return {
+    key: step.key,
+    round: scope.round,
+    raw,
+    parsed,
+    type: 'transform'
+  }
+}
+
 const executeAgentStep = async <TDefinition extends AgentWorkflowDefinition, TStep extends AgentStepDefinition>(
   step: TStep,
   scope: TemplateScope<TDefinition>,
@@ -684,6 +746,12 @@ const executeStep = async <TDefinition extends AgentWorkflowDefinition, TStep ex
       scope,
       ctx
     )) as WorkflowTurnForStep<TDefinition, TStep>
+  }
+  if ((step as TransformStepDefinition).type === 'transform') {
+    return (await executeTransformStep(step as TransformStepDefinition, scope)) as WorkflowTurnForStep<
+      TDefinition,
+      TStep
+    >
   }
   if ((step as CliStepDefinition).type === 'cli') {
     return (await executeCliStep(step as CliStepDefinition, scope, ctx)) as WorkflowTurnForStep<TDefinition, TStep>

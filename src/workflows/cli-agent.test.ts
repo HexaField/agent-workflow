@@ -274,6 +274,99 @@ export const cliPipelineWorkflowDocument = {
 
 const cliPipelineWorkflowDefinition = validateWorkflowDefinition(cliPipelineWorkflowDocument)
 
+export const cliTransformWorkflowDocument = {
+  $schema: 'https://hyperagent.dev/schemas/agent-workflow.json',
+  id: 'cli-transform.v1',
+  description: 'Runs a CLI step then aggregates values via a transform step.',
+  model: 'github-copilot/gpt-5-mini',
+  sessions: {
+    roles: [{ role: 'runner' as const, nameTemplate: '{{runId}}-transform' }]
+  },
+  parsers: {
+    noop: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
+  },
+  roles: {
+    runner: {
+      systemPrompt: 'unused for CLI-only workflow',
+      parser: 'noop',
+      tools: {}
+    }
+  },
+  state: {
+    initial: {
+      appendLine: 'preface-{{user.content}}'
+    }
+  },
+  user: {
+    content: { type: 'string', default: '' }
+  },
+  flow: {
+    round: {
+      start: 'writeLine',
+      steps: [
+        {
+          type: 'cli',
+          key: 'writeLine',
+          command: 'printf',
+          argsObject: {
+            arg0: '%s',
+            arg1: '{{user.content}}'
+          },
+          argsSchema: {
+            type: 'object',
+            properties: {
+              arg0: { type: 'string' },
+              arg1: { type: 'string' }
+            },
+            required: ['arg0', 'arg1']
+          },
+          capture: 'both'
+        },
+        {
+          type: 'transform',
+          key: 'transform',
+          template: {
+            content: '$.user.content',
+            argEcho: '$.steps.writeLine.parsed.args.arg1',
+            stdout: '$.steps.writeLine.parsed.stdout',
+            argsList: ['$.steps.writeLine.parsed.args.arg0, $.steps.writeLine.parsed.args.arg1'],
+            merged: ['$.state.appendLine, $.user.content', { value: '@' }],
+            extra: '$.input.extra'
+          },
+          input: {
+            extra: '{{user.content}}-extra'
+          },
+          inputSchema: {
+            type: 'object',
+            properties: {
+              extra: { type: 'string' }
+            },
+            required: ['extra']
+          },
+          exits: [
+            {
+              condition: 'always',
+              outcome: 'completed',
+              reason: 'Transform complete'
+            }
+          ]
+        }
+      ],
+      maxRounds: 1,
+      defaultOutcome: {
+        outcome: 'completed',
+        reason: 'Transform workflow completed'
+      }
+    }
+  }
+} as const satisfies AgentWorkflowDefinition
+
+const cliTransformWorkflowDefinition = validateWorkflowDefinition(cliTransformWorkflowDocument)
+
 function commandExists(cmd: string): boolean {
   const res = spawnSync('which', [cmd])
   return res.status === 0
@@ -409,6 +502,42 @@ describe('CLI + Agent workflow', () => {
       expect(pipe.parsed.stdoutBuffer?.toString()).toBe('0001020304')
       expect(pipe.parsed.stderr).toBe('')
       expect(pipe.parsed.exitCode).toBe(0)
+    }
+  }, 240_000)
+
+  it('aggregates scope values with a transform step', async () => {
+    const sessionDir = path.join(os.tmpdir(), `.tests/cli-agent-transform-${Date.now()}`)
+
+    fs.mkdirSync(sessionDir, { recursive: true })
+    initGitRepo(sessionDir)
+
+    const content = 'transform me'
+
+    const run = await runAgentWorkflow(cliTransformWorkflowDefinition, {
+      user: { content },
+      model,
+      sessionDir,
+      runCliArgs: defaultRunCliArgs
+    })
+
+    const result = await run.result
+
+    expect(result.rounds.length).toBeGreaterThan(0)
+    const firstRound = result.rounds[0]
+    const transformStep = firstRound.steps.transform
+
+    expect(transformStep?.type).toBe('transform')
+    if (transformStep?.type === 'transform') {
+      const expected = {
+        content,
+        argEcho: content,
+        stdout: content,
+        argsList: ['%s', content],
+        merged: [{ value: `preface-${content}` }, { value: content }],
+        extra: `${content}-extra`
+      }
+      expect(transformStep.parsed).toEqual(expected)
+      expect(JSON.parse(transformStep.raw)).toEqual(expected)
     }
   }, 240_000)
 })

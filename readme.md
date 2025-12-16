@@ -45,3 +45,8 @@ Behavior notes:
 - TypeScript typings are derived from the workflow `user` schema via `UserInputsFromDefinition<T>` so supplying incorrect or missing required fields yields compile-time errors.
 - If runtime validation fails, `runAgentWorkflow` throws `Invalid user inputs for workflow <id>: <details>`.
 - Workflows can mix agent steps (`type: "agent"`, prompt + parser) and CLI steps (`type: "cli"`, `command` + `args` with optional `argsSchema`). CLI steps emit `parsed` with `{ stdout, stderr, exitCode, args }` so transitions and state updates can react to command results.
+
+Dependencies:
+- `@hexafield/jsonpath-object-transform`: renders transform steps by applying JSONPath-driven templates over the workflow scope (`user`, `state`, `steps`, etc.) to produce structured outputs.
+- `@opencode-ai/sdk`: powers Opencode sessions/agents used by the orchestrator to run LLM-backed steps and capture diffs/streaming.
+- `zod`: validates workflow documents, user inputs, and parser schemas at runtime, enforcing shapes and defaults.
