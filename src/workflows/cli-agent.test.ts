@@ -1,9 +1,10 @@
 import { runAgentWorkflow } from '@hexafield/agent-workflow'
-import { execSync, spawnSync } from 'child_process'
+import { execSync, spawn, spawnSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { describe, expect, it, vi } from 'vitest'
+import type { CliRuntimeInvocation, CliRuntimeResult } from '../agent-orchestrator'
 import { opencodeTestHooks } from '../opencodeTestHooks'
 import { AgentWorkflowDefinition, validateWorkflowDefinition } from '../workflow-schema'
 
@@ -46,28 +47,68 @@ export const cliAgentWorkflowDocument = {
     }
   },
   state: {
-    initial: {}
+    initial: { appendLine: '' }
   },
   user: {
     content: { type: 'string', default: 'CLI step content' }
   },
   flow: {
     round: {
-      start: 'writeFile',
+      start: 'writeLine',
       steps: [
         {
           type: 'cli',
+          key: 'writeLine',
+          command: 'printf',
+          argsObject: {
+            arg0: '%s\n',
+            arg1: '{{user.content}}'
+          },
+          argsSchema: {
+            type: 'object',
+            properties: {
+              arg0: { type: 'string' },
+              arg1: { type: 'string' }
+            },
+            required: ['arg0', 'arg1']
+          },
+          capture: 'buffer'
+        },
+        {
+          type: 'cli',
           key: 'writeFile',
-          command: 'bash',
-          args: ['-lc', 'printf "%s\n" "{{user.content}}" "cli step 1" > cli-output.txt'],
-          argsSchema: { type: 'array', items: { type: 'string' } }
+          command: 'tee',
+          argsObject: {
+            arg0: 'cli-output.txt'
+          },
+          argsSchema: {
+            type: 'object',
+            properties: {
+              arg0: { type: 'string' }
+            },
+            required: ['arg0']
+          },
+          stdinFrom: 'steps.writeLine.parsed.stdoutBuffer',
+          capture: 'both'
         },
         {
           type: 'cli',
           key: 'appendFile',
-          command: 'bash',
-          args: ['-lc', 'echo "cli step 2" >> cli-output.txt'],
-          argsSchema: { type: 'array', items: { type: 'string' } }
+          command: 'tee',
+          argsObject: {
+            flag: '-a',
+            file: 'cli-output.txt'
+          },
+          argsSchema: {
+            type: 'object',
+            properties: {
+              flag: { type: 'string' },
+              file: { type: 'string' }
+            },
+            required: ['flag', 'file']
+          },
+          stdinFrom: 'state.appendLine',
+          capture: 'both'
         },
         {
           type: 'agent',
@@ -96,6 +137,61 @@ export const cliAgentWorkflowDocument = {
 } as const satisfies AgentWorkflowDefinition
 
 const cliAgentWorkflowDefinition = validateWorkflowDefinition(cliAgentWorkflowDocument)
+
+function defaultRunCliArgs(input: CliRuntimeInvocation): Promise<CliRuntimeResult> {
+  const captureBuffer = input.capture === 'buffer' || input.capture === 'both'
+  const captureText = input.capture === 'text' || input.capture === 'both'
+  const argv = Object.keys(input.args ?? {})
+    .sort()
+    .map((key) => String(input.args?.[key]))
+  const child = spawn(input.step.command, argv, { cwd: input.cwd, shell: false })
+  let stdout = ''
+  let stderr = ''
+  const stdoutChunks: Buffer[] = []
+  const stderrChunks: Buffer[] = []
+
+  child.stdout?.on('data', (chunk) => {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    if (captureBuffer) stdoutChunks.push(buffer)
+    if (captureText) stdout += buffer.toString()
+  })
+  child.stderr?.on('data', (chunk) => {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    if (captureBuffer) stderrChunks.push(buffer)
+    if (captureText) stderr += buffer.toString()
+  })
+
+  if (input.stdinValue !== undefined && child.stdin) {
+    if (typeof input.stdinValue === 'string') {
+      child.stdin.end(input.stdinValue)
+    } else if (input.stdinValue instanceof Uint8Array) {
+      child.stdin.end(Buffer.from(input.stdinValue))
+    } else {
+      child.stdin.end(String(input.stdinValue))
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    child.on('error', (err) => reject(err))
+    child.on('close', (code) => {
+      const stdoutBuffer = captureBuffer ? Buffer.concat(stdoutChunks) : undefined
+      const stderrBuffer = captureBuffer ? Buffer.concat(stderrChunks) : undefined
+      if (!captureText && stdoutBuffer) {
+        stdout = stdoutBuffer.toString()
+      }
+      if (!captureText && stderrBuffer) {
+        stderr = stderrBuffer.toString()
+      }
+      resolve({
+        stdout,
+        stderr,
+        stdoutBuffer,
+        stderrBuffer,
+        exitCode: code ?? -1
+      })
+    })
+  })
+}
 
 export const cliPipelineWorkflowDocument = {
   $schema: 'https://hyperagent.dev/schemas/agent-workflow.json',
@@ -127,18 +223,35 @@ export const cliPipelineWorkflowDocument = {
         {
           type: 'cli',
           key: 'produce',
-          command: 'node',
-          args: ['-e', 'process.stdout.write(Buffer.from([0,1,2,3,4]))'],
+          command: 'printf',
+          argsObject: {
+            arg0: '%b',
+            arg1: '\\x00\\x01\\x02\\x03\\x04'
+          },
+          argsSchema: {
+            type: 'object',
+            properties: {
+              arg0: { type: 'string' },
+              arg1: { type: 'string' }
+            },
+            required: ['arg0', 'arg1']
+          },
           capture: 'buffer'
         },
         {
           type: 'cli',
           key: 'pipe',
-          command: 'node',
-          args: [
-            '-e',
-            'const chunks=[];process.stdin.on("data",c=>chunks.push(c));process.stdin.on("end",()=>{const buf=Buffer.concat(chunks);process.stdout.write(buf.toString("hex"));});'
-          ],
+          command: 'xxd',
+          argsObject: {
+            arg0: '-p'
+          },
+          argsSchema: {
+            type: 'object',
+            properties: {
+              arg0: { type: 'string' }
+            },
+            required: ['arg0']
+          },
           stdinFrom: 'steps.produce.parsed.stdoutBuffer',
           capture: 'both',
           exits: [
@@ -198,7 +311,8 @@ describe('CLI + Agent workflow', () => {
     const run = await runAgentWorkflow(cliAgentWorkflowDefinition, {
       user: { content },
       model,
-      sessionDir
+      sessionDir,
+      runCliArgs: defaultRunCliArgs
     })
 
     const result = await run.result
@@ -228,9 +342,7 @@ describe('CLI + Agent workflow', () => {
     const outputPath = path.join(sessionDir, 'cli-output.txt')
     expect(fs.existsSync(outputPath)).toBe(true)
     const output = fs.readFileSync(outputPath, 'utf8')
-    expect(output).toContain(content)
-    expect(output).toContain('cli step 1')
-    expect(output).toContain('cli step 2')
+    expect(output.trim().split('\n')).toEqual([content])
   }, 240_000)
 
   it('throws when CLI args are rejected by validator', async () => {
@@ -247,11 +359,19 @@ describe('CLI + Agent workflow', () => {
       user: { content: 'blocked by validator' },
       model,
       sessionDir,
-      validateCliArgs: validationSpy
+      runCliArgs: async (input) => {
+        const ok = validationSpy(input.args, input.step)
+        if (!ok) throw new Error('rejected by runCliArgs')
+        return defaultRunCliArgs(input)
+      }
     })
 
-    await expect(run.result).rejects.toThrow(/rejected by validateCliArgs/)
+    await expect(run.result).rejects.toThrow(/rejected by runCliArgs/)
     expect(validationSpy).toHaveBeenCalled()
+    expect(validationSpy.mock.calls[0][0]).toEqual({
+      arg0: '%s\n',
+      arg1: 'blocked by validator'
+    })
     expect(fs.existsSync(path.join(sessionDir, 'cli-output.txt'))).toBe(false)
   }, 240_000)
 
@@ -264,7 +384,8 @@ describe('CLI + Agent workflow', () => {
     const run = await runAgentWorkflow(cliPipelineWorkflowDefinition, {
       user: {},
       model,
-      sessionDir
+      sessionDir,
+      runCliArgs: defaultRunCliArgs
     })
 
     const result = await run.result

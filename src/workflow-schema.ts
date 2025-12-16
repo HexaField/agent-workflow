@@ -171,6 +171,7 @@ const workflowCliStepSchema = z.object({
   key: z.string().min(1),
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
+  argsObject: z.record(z.string(), z.string()).optional(),
   argsSchema: workflowParserJsonSchema.optional(),
   cwd: z.string().optional(),
   // Optional path expression (e.g., 'steps.previous.parsed.stdoutBuffer') resolved from the runtime scope.

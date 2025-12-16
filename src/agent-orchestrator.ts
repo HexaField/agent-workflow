@@ -1,5 +1,4 @@
 import type { FileDiff, Session } from '@opencode-ai/sdk'
-import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -36,7 +35,7 @@ type AgentWorkflowRunOptionsBase = {
   runID?: string
   maxRounds?: number
   onStream?: AgentStreamCallback
-  validateCliArgs?: (args: unknown, step: CliStepDefinition) => boolean | Promise<boolean>
+  runCliArgs?: (input: CliRuntimeInvocation) => Promise<CliRuntimeResult>
   workflowId?: string
   workflowSource?: 'builtin' | 'user' | 'reference'
   workflowLabel?: string
@@ -120,6 +119,31 @@ type CliStepTurn = {
   }
   type: 'cli'
   command: string
+}
+
+export type CliRuntimeInvocation = {
+  /** Workflow step definition after templating args/cwd and resolving stdinFrom. */
+  step: CliStepDefinition
+  /** Rendered arguments as a named object, after templating and schema validation. */
+  args: Record<string, unknown>
+  /** Rendered working directory for the CLI process. */
+  cwd: string
+  /** Resolved stdin payload (string, Buffer/Uint8Array, or other). */
+  stdinValue?: unknown
+  /** Capture mode requested by the workflow step. */
+  capture: 'text' | 'buffer' | 'both'
+  /** Current workflow scope snapshot so callers can reach previous step data. */
+  scope: TemplateScope<AgentWorkflowDefinition>
+  /** Run identifier for tracing. */
+  runId: string
+}
+
+export type CliRuntimeResult = {
+  stdout?: string
+  stderr?: string
+  stdoutBuffer?: Buffer
+  stderrBuffer?: Buffer
+  exitCode: number
 }
 
 type WorkflowReferenceTurn = {
@@ -420,7 +444,7 @@ type StepExecutionContext<TDefinition extends AgentWorkflowDefinition> = {
   directory: string
   runId: string
   onStream?: AgentStreamCallback
-  validateCliArgs?: AgentWorkflowRunOptionsBase['validateCliArgs']
+  runCliArgs?: AgentWorkflowRunOptionsBase['runCliArgs']
   workflowResolver?: WorkflowResolver
   workflows?: Record<string, AgentWorkflowDefinition>
 }
@@ -455,15 +479,39 @@ const renderWorkflowInputTemplates = <TDefinition extends AgentWorkflowDefinitio
   return input
 }
 
+const arrayToArgObject = (values: ReadonlyArray<unknown>): Record<string, unknown> => {
+  const entries = values.map((value, index) => [`arg${index}`, value] as const)
+  return Object.fromEntries(entries)
+}
+
 const renderCliArgs = <TDefinition extends AgentWorkflowDefinition>(
   args: ReadonlyArray<string> | undefined,
+  argsObject: Record<string, string> | undefined,
   scope: TemplateScope<TDefinition>,
   schema: WorkflowParserJsonSchema | undefined
-): unknown => {
-  const rendered = (args ?? []).map((arg) => renderTemplateString(arg, scope)).map(coerceTemplateValue)
-  if (!schema) return rendered
+): Record<string, unknown> => {
+  let rendered: unknown
+  if (argsObject) {
+    const renderedObject: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(argsObject)) {
+      renderedObject[key] = coerceTemplateValue(renderTemplateString(value, scope))
+    }
+    rendered = renderedObject
+  } else {
+    const renderedArray = (args ?? []).map((arg) => renderTemplateString(arg, scope)).map(coerceTemplateValue)
+    rendered = renderedArray
+  }
+
+  if (!schema) {
+    if (Array.isArray(rendered)) return arrayToArgObject(rendered)
+    return (rendered ?? {}) as Record<string, unknown>
+  }
+
   const parser = workflowParserSchemaToZod(schema)
-  return parser.parse(rendered)
+  const parsed = parser.parse(rendered)
+  if (Array.isArray(parsed)) return arrayToArgObject(parsed)
+  if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>
+  return { value: parsed }
 }
 
 const executeCliStep = async <TDefinition extends AgentWorkflowDefinition>(
@@ -471,60 +519,29 @@ const executeCliStep = async <TDefinition extends AgentWorkflowDefinition>(
   scope: TemplateScope<TDefinition>,
   ctx: StepExecutionContext<TDefinition>
 ): Promise<CliStepTurn> => {
-  const args = renderCliArgs(step.args, scope, step.argsSchema)
-  const captureMode = step.capture ?? 'text'
-  const captureBuffer = captureMode === 'buffer' || captureMode === 'both'
-  const captureText = captureMode === 'text' || captureMode === 'both'
-  const stdinValue = step.stdinFrom ? getValueAtPath(scope, step.stdinFrom) : undefined
-  if (ctx.validateCliArgs) {
-    const isValid = await ctx.validateCliArgs(args, step)
-    if (!isValid) {
-      throw new Error(`CLI args for step ${step.key} rejected by validateCliArgs callback.`)
-    }
+  if (!ctx.runCliArgs) {
+    throw new Error(`runCliArgs callback is required to execute CLI step ${step.key}`)
   }
-  const argv = Array.isArray(args) ? args.map((v) => String(v)) : [String(args)]
+  const args = renderCliArgs(step.args, step.argsObject, scope, step.argsSchema)
+  const captureMode = step.capture ?? 'text'
+  const stdinValue = step.stdinFrom ? getValueAtPath(scope, step.stdinFrom) : undefined
   const cwd = step.cwd ? renderTemplateString(step.cwd, scope) : ctx.directory
 
-  const spawned = spawn(step.command, argv, { cwd, shell: false })
-  let stdout = ''
-  let stderr = ''
-  const stdoutChunks: Buffer[] = []
-  const stderrChunks: Buffer[] = []
-
-  spawned.stdout?.on('data', (chunk) => {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-    if (captureBuffer) stdoutChunks.push(buffer)
-    if (captureText) stdout += buffer.toString()
-  })
-  spawned.stderr?.on('data', (chunk) => {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-    if (captureBuffer) stderrChunks.push(buffer)
-    if (captureText) stderr += buffer.toString()
+  const cliResult = await ctx.runCliArgs({
+    step,
+    args,
+    cwd,
+    stdinValue,
+    capture: captureMode,
+    scope: scope as TemplateScope<AgentWorkflowDefinition>,
+    runId: ctx.runId
   })
 
-  if (stdinValue !== undefined && spawned.stdin) {
-    if (typeof stdinValue === 'string') {
-      spawned.stdin.end(stdinValue)
-    } else if (stdinValue instanceof Uint8Array) {
-      spawned.stdin.end(Buffer.from(stdinValue))
-    } else {
-      spawned.stdin.end(String(stdinValue))
-    }
-  }
-
-  const exitCode: number = await new Promise((resolve, reject) => {
-    spawned.on('error', (err) => reject(err))
-    spawned.on('close', (code) => resolve(code ?? -1))
-  })
-
-  const stdoutBuffer = captureBuffer ? Buffer.concat(stdoutChunks) : undefined
-  const stderrBuffer = captureBuffer ? Buffer.concat(stderrChunks) : undefined
-  if (!captureText && stdoutBuffer) {
-    stdout = stdoutBuffer.toString()
-  }
-  if (!captureText && stderrBuffer) {
-    stderr = stderrBuffer.toString()
-  }
+  const stdoutBuffer = cliResult.stdoutBuffer
+  const stderrBuffer = cliResult.stderrBuffer
+  const stdout = cliResult.stdout ?? (stdoutBuffer ? stdoutBuffer.toString() : '')
+  const stderr = cliResult.stderr ?? (stderrBuffer ? stderrBuffer.toString() : '')
+  const exitCode = cliResult.exitCode
 
   const parsed: CliStepTurn['parsed'] = { stdout, stderr, exitCode, args }
   if (stdoutBuffer) parsed.stdoutBuffer = stdoutBuffer
@@ -584,7 +601,7 @@ const executeWorkflowReferenceStep = async <TDefinition extends AgentWorkflowDef
     workflowSource: 'reference',
     workflowLabel: step.workflowId,
     onStream: ctx.onStream,
-    validateCliArgs: ctx.validateCliArgs,
+    runCliArgs: ctx.runCliArgs,
     workflows: ctx.workflows,
     workflowResolver: ctx.workflowResolver
   })
@@ -955,7 +972,7 @@ export async function runAgentWorkflow<TDefinition extends AgentWorkflowDefiniti
       directory,
       runId,
       onStream: options.onStream,
-      validateCliArgs: options.validateCliArgs,
+      runCliArgs: options.runCliArgs,
       workflows: options.workflows,
       workflowResolver: options.workflowResolver
     }
