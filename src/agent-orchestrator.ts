@@ -8,6 +8,7 @@ import { AgentRunResponse, AgentStreamCallback, invokeStructuredJsonCall, parseJ
 import { ToolOptions, createAgent, createSession, getMessageDiff, getSession } from './opencode'
 import {
   RunMeta,
+  attachRoleDiff,
   createRunMeta,
   findLatestRoleDiff,
   findLatestRoleMessageId,
@@ -1165,6 +1166,10 @@ export async function getWorkflowRunDiff(
   if (!messageId) return []
   const opencodeDiffs = await getMessageDiff(session, messageId)
   if (opencodeDiffs.length > 0) {
+    const attached = attachRoleDiff(meta, targetRole, messageId, opencodeDiffs)
+    if (attached) {
+      saveRunMeta(meta, runId, directory)
+    }
     return opencodeDiffs
   }
   return []

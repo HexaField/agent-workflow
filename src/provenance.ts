@@ -166,3 +166,32 @@ export function findLatestRoleDiff(meta: RunMeta, role: string): FileDiff[] | nu
   const files = Array.isArray(diffPayload?.files) ? (diffPayload.files as FileDiff[]) : []
   return files.length ? files : null
 }
+
+export function attachRoleDiff(meta: RunMeta, role: string, messageId: string | null, files: FileDiff[]): boolean {
+  if (!Array.isArray(meta.log) || meta.log.length === 0) return false
+  for (let i = meta.log.length - 1; i >= 0; i--) {
+    const entry = meta.log[i]
+    if (entry.role !== role) continue
+
+    const payload: Record<string, unknown> = (entry.payload && typeof entry.payload === 'object'
+      ? entry.payload
+      : {}) as Record<string, unknown>
+
+    const responseParts = Array.isArray(payload.response) ? (payload.response as MessagePartLike[]) : []
+    const hasMatchingMessage =
+      !messageId || responseParts.some((part) => typeof part.messageID === 'string' && part.messageID === messageId)
+
+    if (!hasMatchingMessage) continue
+
+    payload.diff = {
+      files,
+      source: 'opencode',
+      messageId: messageId ?? undefined,
+      capturedAt: new Date().toISOString()
+    }
+
+    entry.payload = payload
+    return true
+  }
+  return false
+}

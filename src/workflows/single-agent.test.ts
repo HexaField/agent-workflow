@@ -83,6 +83,11 @@ describe('Single agent loop', () => {
       expect(entry.log.length).toBeGreaterThan(0)
       const agentMessages = entry.log.filter((e) => e.role === namespacedAgentName)
       expect(agentMessages.length).toBeGreaterThan(0)
+      const agentDiffLogged = agentMessages.some((message) => {
+        const files = (message.payload as any)?.diff?.files
+        return Array.isArray(files) && files.length > 0
+      })
+      expect(agentDiffLogged).toBe(true)
       const userMessages = entry.log.filter((e) => e.role === 'user')
       expect(userMessages.length).toBeGreaterThan(0)
       expect(

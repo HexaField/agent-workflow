@@ -46,7 +46,7 @@ const captureDiffSnapshot = async (args: {
   let files: FileDiff[] = []
 
   try {
-    files = await getMessageDiff(args.session, messageId)
+    files = await getMessageDiff(args.session, messageId, { attempts: 10, delayMs: 200 })
   } catch (error) {
     console.warn('[agent] message diff retrieval failed', {
       runId: args.runId,

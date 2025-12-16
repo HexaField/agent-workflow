@@ -84,39 +84,49 @@ describe('Opencode Module', () => {
     expect(lastText.includes(TOKEN)).toBe(true)
   }, 120_000)
 
-  /** @todo fails intermittently */
-  it.skip('should retrieve message diffs after file edits', async () => {
-    const sessionDir = createSessionDir()
+  for (let i = 0; i < 5; i++)
+    it('should retrieve message diffs after file edits', async () => {
+      const sessionDir = createSessionDir()
 
-    const AGENT_NAME = 'test-agent'
-    const agentPrompt = `You are the ${AGENT_NAME} agent. When invoked, do as the user instructs.`
+      const AGENT_NAME = 'test-agent'
+      const agentPrompt = `You are the ${AGENT_NAME} agent. When invoked, do as the user instructs.`
 
-    const created = await createAgent(sessionDir, AGENT_NAME, MODEL, agentPrompt, {
-      read: true,
-      edit: true,
-      bash: true
-    })
-    expect(created).toBeDefined()
+      const created = await createAgent(sessionDir, AGENT_NAME, MODEL, agentPrompt, {
+        read: true,
+        edit: true,
+        bash: true
+      })
+      expect(created).toBeDefined()
 
-    const session = await createSession(sessionDir)
-    const promptText = `Create (or overwrite) a file named "opencode-test.md" in the workspace root with the exact contents: "Hello from the Opencode tests" followed by a newline. After writing, confirm the file contents.`
-    const response = await promptSession(session, [promptText], MODEL, AGENT_NAME)
-    const messageId = response.parts.find((part) => typeof part?.messageID === 'string')?.messageID as
-      | string
-      | undefined
+      const session = await createSession(sessionDir)
+      const promptText = `Create (or overwrite) a file named "opencode-test.md" in the workspace root with the exact contents: "Hello from the Opencode tests" followed by a newline. After writing, confirm the file contents.`
+      const response = await promptSession(session, [promptText], MODEL, AGENT_NAME)
+      const messageId = response.parts.find((part) => typeof part?.messageID === 'string')?.messageID as
+        | string
+        | undefined
 
-    expect(messageId).toBeDefined()
+      expect(messageId).toBeDefined()
 
-    const diffs = await getMessageDiff(session, messageId!)
-    expect(Array.isArray(diffs)).toBe(true)
+      const diffs = await getMessageDiff(session, messageId!)
+      expect(Array.isArray(diffs)).toBe(true)
 
-    const filePath = path.join(sessionDir, 'opencode-test.md')
-    expect(fs.existsSync(filePath)).toBe(true)
-    const content = fs.readFileSync(filePath, 'utf8')
-    expect(content.toLowerCase()).toContain('hello from the opencode tests')
+      const filePath = path.join(sessionDir, 'opencode-test.md')
+      expect(fs.existsSync(filePath)).toBe(true)
+      const content = fs.readFileSync(filePath, 'utf8')
+      expect(content.toLowerCase()).toContain('hello from the opencode tests')
 
-    const readmeDiff = diffs.find((diff) => diff.file.toLowerCase().includes('opencode-test.md'))
-    expect(readmeDiff).toBeTruthy()
-    expect(readmeDiff?.after.toLowerCase()).toContain('hello from the opencode tests')
-  }, 120_000)
+      const readmeDiff = diffs.find((diff) => diff.file.toLowerCase().includes('opencode-test.md'))
+      if (!readmeDiff) {
+        // Helpful when diagnosing flakiness in CI
+        console.error('No opencode-test.md diff found', {
+          sessionId: session.id,
+          directory: sessionDir,
+          messageId,
+          diffCount: diffs.length,
+          files: diffs.map((d) => d.file)
+        })
+      }
+      expect(readmeDiff).toBeTruthy()
+      expect(readmeDiff?.after.toLowerCase()).toContain('hello from the opencode tests')
+    }, 120_000)
 })

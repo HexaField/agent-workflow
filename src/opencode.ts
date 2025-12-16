@@ -1,5 +1,7 @@
 import type { FileDiff, OpencodeClient, Part, Session, TextPart } from '@opencode-ai/sdk'
+import fg from 'fast-glob'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 
 let opencodeServer: {
@@ -9,6 +11,13 @@ let opencodeServer: {
 const opencodeClients: { [directory: string]: OpencodeClient } = {}
 
 type SummaryWithDiffs = { title?: string; body?: string; diffs: FileDiff[] }
+type MessageDiffOptions = {
+  attempts?: number
+  delayMs?: number
+  includeSummaryFallback?: boolean
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const extractSummaryDiffs = (summary: SummaryWithDiffs | boolean | undefined): FileDiff[] => {
   if (!summary || typeof summary === 'boolean') return []
@@ -19,6 +28,120 @@ const resetOpencodeClients = () => {
   for (const key of Object.keys(opencodeClients)) {
     delete opencodeClients[key]
   }
+}
+
+const SNAPSHOT_IGNORE = ['**/.git/**', '**/node_modules/**', '**/.opencode/node_modules/**', '**/.hyperagent/**']
+const sessionSnapshots: Record<string, string> = {}
+
+const cleanupSnapshot = async (sessionId: string) => {
+  const snapshotDir = sessionSnapshots[sessionId]
+  if (!snapshotDir) return
+  delete sessionSnapshots[sessionId]
+  try {
+    await fs.promises.rm(snapshotDir, { recursive: true, force: true })
+  } catch {}
+}
+
+const captureWorkspaceSnapshot = async (session: Session) => {
+  if (!session?.id || !session?.directory) return
+  await cleanupSnapshot(session.id)
+
+  const snapshotBase = path.join(os.tmpdir(), '.opencode-diff')
+  const snapshotDir = path.join(snapshotBase, `${session.id}-${Date.now()}`)
+
+  await fs.promises.mkdir(snapshotBase, { recursive: true })
+
+  const entries = await fg(['**/*', '**/.*'], {
+    cwd: session.directory,
+    onlyFiles: true,
+    dot: true,
+    ignore: SNAPSHOT_IGNORE
+  })
+
+  for (const relative of entries) {
+    const source = path.join(session.directory, relative)
+    const dest = path.join(snapshotDir, relative)
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true })
+    try {
+      await fs.promises.copyFile(source, dest)
+    } catch {}
+  }
+
+  sessionSnapshots[session.id] = snapshotDir
+}
+
+const longestCommonSubsequence = (a: string[], b: string[]): number => {
+  const dp: number[][] = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0))
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1])
+      }
+    }
+  }
+  return dp[a.length][b.length]
+}
+
+const countLineChanges = (before: string, after: string) => {
+  const beforeLines = before.split(/\r?\n/)
+  const afterLines = after.split(/\r?\n/)
+  const lcs = longestCommonSubsequence(beforeLines, afterLines)
+  return {
+    additions: Math.max(0, afterLines.length - lcs),
+    deletions: Math.max(0, beforeLines.length - lcs)
+  }
+}
+
+const computeDiffFromSnapshot = async (session: Session): Promise<FileDiff[]> => {
+  const snapshotDir = sessionSnapshots[session.id]
+  if (!snapshotDir) return []
+
+  const beforeFiles = await fg(['**/*', '**/.*'], {
+    cwd: snapshotDir,
+    onlyFiles: true,
+    dot: true,
+    ignore: SNAPSHOT_IGNORE
+  })
+  const afterFiles = await fg(['**/*', '**/.*'], {
+    cwd: session.directory,
+    onlyFiles: true,
+    dot: true,
+    ignore: SNAPSHOT_IGNORE
+  })
+
+  const allFiles = new Set([...beforeFiles, ...afterFiles])
+  const diffs: FileDiff[] = []
+
+  for (const relative of allFiles) {
+    const beforePath = path.join(snapshotDir, relative)
+    const afterPath = path.join(session.directory, relative)
+
+    let beforeContent = ''
+    let afterContent = ''
+
+    try {
+      beforeContent = fs.existsSync(beforePath) ? fs.readFileSync(beforePath, 'utf8') : ''
+    } catch {}
+    try {
+      afterContent = fs.existsSync(afterPath) ? fs.readFileSync(afterPath, 'utf8') : ''
+    } catch {}
+
+    if (beforeContent === afterContent) continue
+
+    const { additions, deletions } = countLineChanges(beforeContent, afterContent)
+    diffs.push({
+      file: relative,
+      before: beforeContent,
+      after: afterContent,
+      additions,
+      deletions
+    })
+  }
+
+  await cleanupSnapshot(session.id)
+  return diffs
 }
 
 export const closeOpencodeServer = () => {
@@ -138,6 +261,16 @@ export const promptSession = async (
 ) => {
   const opencode = await getOpencodeClient(session.directory)
 
+  try {
+    await captureWorkspaceSnapshot(session)
+  } catch (error) {
+    console.warn('[opencode] failed to snapshot workspace before prompt', {
+      sessionId: session.id,
+      directory: session.directory,
+      error: error instanceof Error ? error.message : String(error)
+    })
+  }
+
   const [providerID, modelID] = model.split('/')
 
   const response = await opencode.session.prompt({
@@ -167,32 +300,77 @@ export const promptSession = async (
   return { ...(payload as Record<string, unknown>), parts }
 }
 
-export const getMessageDiff = async (session: Session, messageID: string): Promise<FileDiff[]> => {
+export const getMessageDiff = async (
+  session: Session,
+  messageID: string,
+  options: MessageDiffOptions = {}
+): Promise<FileDiff[]> => {
   if (!messageID) return []
 
   const opencode = await getOpencodeClient(session.directory)
   const directoryQuery = session.directory ? { directory: session.directory } : {}
 
-  const response = await opencode.session.diff({
-    path: { id: session.id },
-    query: { ...directoryQuery, messageID }
-  })
+  const attempts = Math.max(1, options.attempts ?? 5)
+  const delayMs = Math.max(0, options.delayMs ?? 200)
+  const includeSummaryFallback = options.includeSummaryFallback !== false
 
-  if (!response?.data!) throw new Error('Failed to retrieve Opencode message diff')
-  if (response.data.length > 0) {
-    return response.data
+  let lastError: unknown
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await opencode.session.diff({
+        path: { id: session.id },
+        query: { ...directoryQuery, messageID }
+      })
+
+      if (!response?.data) {
+        throw new Error('Failed to retrieve Opencode message diff')
+      }
+
+      if (response.data.length > 0) {
+        await cleanupSnapshot(session.id)
+        return response.data
+      }
+    } catch (error) {
+      lastError = error
+    }
+
+    if (includeSummaryFallback) {
+      try {
+        const message = await opencode.session.message({
+          path: { id: session.id, messageID },
+          query: directoryQuery
+        })
+        const summaryDiffs = extractSummaryDiffs(message?.data?.info?.summary)
+        if (summaryDiffs.length > 0) {
+          await cleanupSnapshot(session.id)
+          return summaryDiffs
+        }
+      } catch (error) {
+        lastError = error
+      }
+    }
+
+    if (attempt < attempts) {
+      await wait(delayMs)
+    }
   }
 
-  try {
-    const message = await opencode.session.message({
-      path: { id: session.id, messageID },
-      query: directoryQuery
+  const fallbackDiffs = await computeDiffFromSnapshot(session)
+  if (fallbackDiffs.length > 0) {
+    return fallbackDiffs
+  }
+
+  await cleanupSnapshot(session.id)
+
+  if (lastError) {
+    console.warn('[opencode] message diff retrieval exhausted retries', {
+      sessionId: session.id,
+      messageID,
+      attempts,
+      lastError: lastError instanceof Error ? lastError.message : String(lastError)
     })
-    const summaryDiffs = extractSummaryDiffs(message?.data?.info?.summary)
-    if (summaryDiffs.length > 0) {
-      return summaryDiffs
-    }
-  } catch {}
+  }
 
   return []
 }
