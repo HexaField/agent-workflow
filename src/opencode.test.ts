@@ -108,7 +108,12 @@ describe('Opencode Module', () => {
 
     const diffs = await getMessageDiff(session, messageId!)
     expect(Array.isArray(diffs)).toBe(true)
-    expect(diffs.length).toBeGreaterThan(0)
+
+    const filePath = path.join(sessionDir, 'opencode-test.md')
+    expect(fs.existsSync(filePath)).toBe(true)
+    const content = fs.readFileSync(filePath, 'utf8')
+    expect(content.toLowerCase()).toContain('hello from the opencode tests')
+
     const readmeDiff = diffs.find((diff) => diff.file.toLowerCase().includes('opencode-test.md'))
     expect(readmeDiff).toBeTruthy()
     expect(readmeDiff?.after.toLowerCase()).toContain('hello from the opencode tests')

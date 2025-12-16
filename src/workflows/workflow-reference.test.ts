@@ -146,6 +146,15 @@ const referencedCliWorkflowDocument = {
 
 const referencedCliWorkflowDefinition = validateWorkflowDefinition(referencedCliWorkflowDocument)
 
+async function referenceRunCliArgs(input: any) {
+  const filename = String(input.scope.user.filename ?? input.args.arg1 ?? 'nested-output.txt')
+  const content = String(input.scope.user.content ?? '')
+  const target = path.join(input.cwd, filename)
+  const buffer = Buffer.from(content)
+  fs.writeFileSync(target, buffer)
+  return { stdout: buffer.toString(), stderr: '', stdoutBuffer: buffer, exitCode: 0 }
+}
+
 function commandExists(cmd: string): boolean {
   const res = spawnSync('which', [cmd])
   return res.status === 0
@@ -189,7 +198,8 @@ describe('Workflow references', () => {
       user: { goalFile, goalContent },
       model,
       sessionDir,
-      workflows: workflowRegistry
+      workflows: workflowRegistry,
+      runCliArgs: referenceRunCliArgs
     })
 
     const result = await run.result
@@ -225,7 +235,8 @@ describe('Workflow references', () => {
       user: { goalFile: 123 as unknown as string, goalContent: 'ok' },
       model,
       sessionDir,
-      workflows: workflowRegistry
+      workflows: workflowRegistry,
+      runCliArgs: referenceRunCliArgs
     })
 
     await expect(run.result).rejects.toThrow(/Invalid input/i)
