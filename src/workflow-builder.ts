@@ -1,11 +1,15 @@
 import { z } from 'zod'
 import { ToolOptions } from './opencode'
-import {
-  AgentWorkflowDefinition,
-  WorkflowParserJsonSchema,
-  WorkflowTransitionDefinition,
-  validateWorkflowDefinition
-} from './workflow-schema'
+import { WorkflowParserJsonSchema, WorkflowTransitionDefinition, validateWorkflowDefinition } from './workflow-schema'
+
+type AnyParserSchema = WorkflowParserJsonSchema | z.ZodTypeAny
+type InferParserSchema<TSchema> = TSchema extends z.ZodTypeAny
+  ? WorkflowParserJsonSchema
+  : TSchema extends WorkflowParserJsonSchema
+    ? TSchema
+    : never
+type WorkflowRoleConfig<TParserName extends string> = { systemPrompt: string; parser: TParserName; tools?: ToolOptions }
+type RoleNames<TRoles> = keyof TRoles extends never ? string : keyof TRoles & string
 
 type ParserDraft =
   | { type: 'unknown'; default?: unknown }
@@ -186,10 +190,10 @@ type CommonStepFields = {
   exits?: WorkflowTransitionDefinition[]
 }
 
-type AgentStepDraft = CommonStepFields & {
+type AgentStepDraft<TRole extends string = string> = CommonStepFields & {
   type: 'agent'
   key: string
-  role: string
+  role: TRole
   prompt: string[]
 }
 
@@ -221,14 +225,19 @@ type TransformStepDraft = CommonStepFields & {
   inputSchema?: WorkflowParserJsonSchema
 }
 
-type AnyStepDraft = AgentStepDraft | CliStepDraft | WorkflowReferenceStepDraft | TransformStepDraft
+type AnyStepDraft<TRole extends string = string> =
+  | AgentStepDraft<TRole>
+  | CliStepDraft
+  | WorkflowReferenceStepDraft
+  | TransformStepDraft
+type NormalizedParserSchema<TSchema extends AnyParserSchema> = InferParserSchema<TSchema>
 
-const normalizeParserSchema = (schema?: z.ZodTypeAny | WorkflowParserJsonSchema) => {
+const normalizeParserSchema = <TSchema extends AnyParserSchema>(schema?: TSchema): NormalizedParserSchema<TSchema> | undefined => {
   if (!schema) return undefined
-  return isZodSchema(schema) ? zodToWorkflowParserJsonSchema(schema) : schema
+  return (isZodSchema(schema) ? zodToWorkflowParserJsonSchema(schema) : schema) as NormalizedParserSchema<TSchema>
 }
 
-const buildAgentStep = (input: Omit<AgentStepDraft, 'type'>): AgentStepDraft => ({
+const buildAgentStep = <TRole extends string>(input: Omit<AgentStepDraft<TRole>, 'type'>): AgentStepDraft<TRole> => ({
   type: 'agent',
   ...input
 })
@@ -254,16 +263,17 @@ const buildTransformStep = (
   ...input,
   inputSchema: normalizeParserSchema(input.inputSchema)
 })
-
-type RoundDefinitionDraft = {
+type RoundDefinitionDraft<TRole extends string = string> = {
   start?: string
-  steps: AnyStepDraft[]
+  steps: AnyStepDraft<TRole>[]
   maxRounds?: number
-  defaultOutcome?: { outcome: string; reason: string }
+  defaultOutcome: { outcome: string; reason: string }
 }
 
-class RoundBuilder {
-  private readonly draft: RoundDefinitionDraft
+class RoundBuilder<TRole extends string> {
+  private readonly draft: Omit<RoundDefinitionDraft<TRole>, 'defaultOutcome'> & {
+    defaultOutcome?: RoundDefinitionDraft<TRole>['defaultOutcome']
+  }
 
   constructor() {
     this.draft = { steps: [] }
@@ -284,7 +294,7 @@ class RoundBuilder {
     return this
   }
 
-  agent(key: string, role: string, prompt: string[], options: CommonStepFields = {}): this {
+  agent(key: string, role: TRole, prompt: string[], options: CommonStepFields = {}): this {
     this.draft.steps.push(buildAgentStep({ key, role, prompt, ...options }))
     return this
   }
@@ -304,7 +314,7 @@ class RoundBuilder {
     return this
   }
 
-  build(): RoundDefinitionDraft {
+  build(): RoundDefinitionDraft<TRole> {
     if (!this.draft.defaultOutcome) {
       throw new Error('defaultOutcome is required for workflow rounds')
     }
@@ -320,28 +330,61 @@ class RoundBuilder {
   }
 }
 
-type WorkflowDefinitionDraft = {
+type WorkflowDefinitionDraft<
+  TParsers extends Record<string, WorkflowParserJsonSchema>,
+  TRoles extends Record<string, WorkflowRoleConfig<keyof TParsers & string>>,
+  TUser extends Record<string, WorkflowParserJsonSchema> | undefined,
+  TRound extends RoundDefinitionDraft<RoleNames<TRoles>> | undefined,
+  TBootstrap extends AnyStepDraft<RoleNames<TRoles>> | undefined
+> = {
+  $schema?: string
   id: string
   description?: string
   model?: string
-  sessions: { roles: { role: string; nameTemplate?: string }[] }
-  parsers: Record<string, WorkflowParserJsonSchema>
-  roles: Record<string, { systemPrompt: string; parser: string; tools?: ToolOptions }>
+  sessions: { roles: ReadonlyArray<{ role: RoleNames<TRoles> | string; nameTemplate?: string }> }
+  parsers?: TParsers
+  roles: TRoles
   state?: { initial?: Record<string, string> }
-  user?: Record<string, WorkflowParserJsonSchema>
-  flow: { bootstrap?: AnyStepDraft; round?: RoundDefinitionDraft }
+  user?: TUser
+  flow: { bootstrap?: TBootstrap; round?: TRound }
 }
 
-export class WorkflowBuilder {
-  private readonly state: WorkflowDefinitionDraft
+type WorkflowBuilderState<
+  TParsers extends Record<string, WorkflowParserJsonSchema>,
+  TRoles extends Record<string, WorkflowRoleConfig<keyof TParsers & string>>,
+  TUser extends Record<string, WorkflowParserJsonSchema> | undefined,
+  TRound extends RoundDefinitionDraft<RoleNames<TRoles>> | undefined,
+  TBootstrap extends AnyStepDraft<RoleNames<TRoles>> | undefined
+> = {
+  $schema?: string
+  id: string
+  description?: string
+  model?: string
+  sessions: { roles: Array<{ role: RoleNames<TRoles> | string; nameTemplate?: string }> }
+  parsers?: TParsers
+  roles: TRoles
+  state?: { initial?: Record<string, string> }
+  user?: TUser
+  flow: { bootstrap?: TBootstrap; round?: TRound }
+}
+
+export class WorkflowBuilder<
+  TParsers extends Record<string, WorkflowParserJsonSchema> = {},
+  TRoles extends Record<string, WorkflowRoleConfig<keyof TParsers & string>> = {},
+  TUser extends Record<string, WorkflowParserJsonSchema> | undefined = undefined,
+  TRound extends RoundDefinitionDraft<RoleNames<TRoles>> | undefined = undefined,
+  TBootstrap extends AnyStepDraft<RoleNames<TRoles>> | undefined = undefined
+> {
+  private readonly state: WorkflowBuilderState<TParsers, TRoles, TUser, TRound, TBootstrap>
 
   constructor(id: string) {
     this.state = {
       id,
       sessions: { roles: [] },
-      parsers: {},
-      roles: {},
-      flow: {}
+      parsers: {} as TParsers,
+      roles: {} as TRoles,
+      flow: {} as { bootstrap?: TBootstrap; round?: TRound },
+      user: undefined as TUser
     }
   }
 
@@ -355,29 +398,80 @@ export class WorkflowBuilder {
     return this
   }
 
-  session(role: string, nameTemplate?: string): this {
+  session<const TRoleName extends RoleNames<TRoles> | string>(role: TRoleName, nameTemplate?: string): this {
     this.state.sessions.roles.push({ role, nameTemplate })
     return this
   }
 
-  parser(name: string, schema: z.ZodTypeAny | WorkflowParserJsonSchema): this {
-    this.state.parsers[name] = isZodSchema(schema) ? zodToWorkflowParserJsonSchema(schema) : schema
-    return this
+  parser<const TName extends string, const TSchema extends AnyParserSchema>(
+    name: TName,
+    schema: TSchema
+  ): WorkflowBuilder<
+    TParsers & Record<TName, NormalizedParserSchema<TSchema>>,
+    TRoles,
+    TUser,
+    TRound,
+    TBootstrap
+  > {
+    const normalized = normalizeParserSchema(schema)
+    ;(this.state.parsers as Record<string, WorkflowParserJsonSchema>)[name] = normalized as WorkflowParserJsonSchema
+    return this as unknown as WorkflowBuilder<
+      TParsers & Record<TName, NormalizedParserSchema<TSchema>>,
+      TRoles,
+      TUser,
+      TRound,
+      TBootstrap
+    >
   }
 
-  role(name: string, config: { systemPrompt: string; parser: string; tools?: ToolOptions }): this {
+  role<const TRoleName extends string, const TParserName extends keyof TParsers & string>(
+    name: TRoleName,
+    config: WorkflowRoleConfig<TParserName>
+  ): WorkflowBuilder<
+    TParsers,
+    TRoles & Record<TRoleName, WorkflowRoleConfig<TParserName>>,
+    TUser,
+    TRound,
+    TBootstrap
+  > {
     this.state.roles[name] = {
       systemPrompt: config.systemPrompt,
       parser: config.parser,
       tools: config.tools
-    }
-    return this
+    } as unknown as TRoles[TRoleName]
+    return this as unknown as WorkflowBuilder<
+      TParsers,
+      TRoles & Record<TRoleName, WorkflowRoleConfig<TParserName>>,
+      TUser,
+      TRound,
+      TBootstrap
+    >
   }
 
-  user(key: string, schema: z.ZodTypeAny | WorkflowParserJsonSchema): this {
-    if (!this.state.user) this.state.user = {}
-    this.state.user[key] = isZodSchema(schema) ? zodToWorkflowParserJsonSchema(schema) : schema
-    return this
+  user<const TKey extends string, const TSchema extends AnyParserSchema>(
+    key: TKey,
+    schema: TSchema
+  ): WorkflowBuilder<
+    TParsers,
+    TRoles,
+    (TUser extends undefined ? Record<TKey, NormalizedParserSchema<TSchema>> : TUser & Record<TKey, NormalizedParserSchema<TSchema>>),
+    TRound,
+    TBootstrap
+  > {
+    const normalized = normalizeParserSchema(schema)
+    if (!this.state.user) {
+      ;(this.state.user as Record<string, WorkflowParserJsonSchema> | undefined) = {} as any
+    }
+    ;(this.state.user as Record<string, WorkflowParserJsonSchema> | undefined)![key] = normalized as WorkflowParserJsonSchema
+    return this as unknown as WorkflowBuilder<
+      TParsers,
+      TRoles,
+      (TUser extends undefined
+        ? Record<TKey, NormalizedParserSchema<TSchema>>
+        : TUser & Record<TKey, NormalizedParserSchema<TSchema>>),
+      TRound,
+      TBootstrap
+    >
   }
 
   stateInitial(initial: Record<string, string>): this {
@@ -385,43 +479,71 @@ export class WorkflowBuilder {
     return this
   }
 
-  bootstrapAgent(key: string, role: string, prompt: string[], options: CommonStepFields = {}): this {
-    this.state.flow.bootstrap = buildAgentStep({ key, role, prompt, ...options })
-    return this
+  bootstrapAgent<const TRole extends RoleNames<TRoles>>(
+    key: string,
+    role: TRole,
+    prompt: string[],
+    options: CommonStepFields = {}
+  ): WorkflowBuilder<TParsers, TRoles, TUser, TRound, AgentStepDraft<TRole>> {
+    this.state.flow.bootstrap = buildAgentStep({ key, role, prompt, ...options }) as unknown as TBootstrap
+    return this as unknown as WorkflowBuilder<TParsers, TRoles, TUser, TRound, AgentStepDraft<TRole>>
   }
 
-  bootstrapCli(key: string, command: string, options: Omit<CliStepDraft, 'type' | 'key' | 'command' | 'argsSchema'> & { argsSchema?: z.ZodTypeAny | WorkflowParserJsonSchema } = {}): this {
-    this.state.flow.bootstrap = buildCliStep({ key, command, ...options })
-    return this
+  bootstrapCli(
+    key: string,
+    command: string,
+    options: Omit<CliStepDraft, 'type' | 'key' | 'command' | 'argsSchema'> & { argsSchema?: z.ZodTypeAny | WorkflowParserJsonSchema } = {}
+  ): WorkflowBuilder<TParsers, TRoles, TUser, TRound, CliStepDraft> {
+    this.state.flow.bootstrap = buildCliStep({ key, command, ...options }) as TBootstrap
+    return this as unknown as WorkflowBuilder<TParsers, TRoles, TUser, TRound, CliStepDraft>
   }
 
   bootstrapWorkflow(
     key: string,
     workflowId: string,
     options: Omit<WorkflowReferenceStepDraft, 'type' | 'key' | 'workflowId' | 'inputSchema'> & { inputSchema?: z.ZodTypeAny | WorkflowParserJsonSchema } = {}
-  ): this {
-    this.state.flow.bootstrap = buildWorkflowReferenceStep({ key, workflowId, ...options })
-    return this
+  ): WorkflowBuilder<TParsers, TRoles, TUser, TRound, WorkflowReferenceStepDraft> {
+    this.state.flow.bootstrap = buildWorkflowReferenceStep({ key, workflowId, ...options }) as TBootstrap
+    return this as unknown as WorkflowBuilder<TParsers, TRoles, TUser, TRound, WorkflowReferenceStepDraft>
   }
 
   bootstrapTransform(
     key: string,
     template: unknown,
     options: Omit<TransformStepDraft, 'type' | 'key' | 'template' | 'inputSchema'> & { inputSchema?: z.ZodTypeAny | WorkflowParserJsonSchema } = {}
-  ): this {
-    this.state.flow.bootstrap = buildTransformStep({ key, template, ...options })
-    return this
+  ): WorkflowBuilder<TParsers, TRoles, TUser, TRound, TransformStepDraft> {
+    this.state.flow.bootstrap = buildTransformStep({ key, template, ...options }) as TBootstrap
+    return this as unknown as WorkflowBuilder<TParsers, TRoles, TUser, TRound, TransformStepDraft>
   }
 
-  round(builder: (round: RoundBuilder) => void): this {
-    const roundBuilder = new RoundBuilder()
+  round(builder: (round: RoundBuilder<RoleNames<TRoles>>) => void): WorkflowBuilder<
+    TParsers,
+    TRoles,
+    TUser,
+    RoundDefinitionDraft<RoleNames<TRoles>>,
+    TBootstrap
+  > {
+    const roundBuilder = new RoundBuilder<RoleNames<TRoles>>()
     builder(roundBuilder)
-    this.state.flow.round = roundBuilder.build()
-    return this
+    this.state.flow.round = roundBuilder.build() as TRound
+    return this as unknown as WorkflowBuilder<
+      TParsers,
+      TRoles,
+      TUser,
+      RoundDefinitionDraft<RoleNames<TRoles>>,
+      TBootstrap
+    >
   }
 
-  build(): AgentWorkflowDefinition {
-    if (!this.state.flow.round) {
+  build(): WorkflowDefinitionDraft<
+    TParsers,
+    TRoles,
+    TUser,
+    RoundDefinitionDraft<RoleNames<TRoles>>,
+    TBootstrap
+  > & { flow: { round: RoundDefinitionDraft<RoleNames<TRoles>>; bootstrap?: TBootstrap } } {
+    const round = this.state.flow.round
+    if (!round) {
       throw new Error('Workflow round must be defined before build()')
     }
 
@@ -430,13 +552,19 @@ export class WorkflowBuilder {
       id: this.state.id,
       description: this.state.description,
       model: this.state.model,
-      sessions: this.state.sessions,
-      parsers: Object.keys(this.state.parsers).length ? this.state.parsers : undefined,
+      sessions: { roles: [...this.state.sessions.roles] },
+      parsers: Object.keys(this.state.parsers ?? {}).length ? this.state.parsers : undefined,
       roles: this.state.roles,
       state: this.state.state,
       user: this.state.user,
-      flow: this.state.flow
-    } as AgentWorkflowDefinition
+      flow: { bootstrap: this.state.flow.bootstrap, round }
+    } satisfies WorkflowDefinitionDraft<
+      TParsers,
+      TRoles,
+      TUser,
+      RoundDefinitionDraft<RoleNames<TRoles>>,
+      TBootstrap
+    > & { flow: { round: RoundDefinitionDraft<RoleNames<TRoles>>; bootstrap?: TBootstrap } }
 
     return validateWorkflowDefinition(definition)
   }
