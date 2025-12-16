@@ -259,3 +259,36 @@ When defining workflows in TypeScript (`*.workflow.ts`), use `as const` on the d
 8. Ship alongside integration tests that exercise the orchestrator with realistic instructions.
 
 By adhering to this structure, you can describe new agent collaborations purely through JSON without writing bespoke orchestration code, keeping behavior consistent and testable throughout the platform.
+
+## Fluent Builder API (TypeScript)
+
+If you prefer chaining over writing raw JSON, use the `workflow` builder exported from `@hexafield/agent-workflow` (defined in `src/workflow-builder.ts`). It mirrors the JSON shape, converts Zod schemas into the compact parser format, and validates via the same Zod schema before returning a typed `AgentWorkflowDefinition`.
+
+Example:
+
+```ts
+import { workflow, validateWorkflowDefinition, zodToWorkflowParserJsonSchema } from '@hexafield/agent-workflow'
+import { z } from 'zod'
+
+const definition = workflow('builder-example.v1')
+  .description('Single agent built fluently')
+  .model('github-copilot/gpt-5-mini')
+  .session('agent', '{{runId}}-builder')
+  .parser('passthrough', z.unknown())
+  .user('instructions', z.string().default(''))
+  .role('agent', { systemPrompt: 'Do the task.', parser: 'passthrough', tools: { read: true, write: true } })
+  .round((round) =>
+    round
+      .start('agent')
+      .agent('agent', 'agent', ['Handle: {{user.instructions}}'], {
+        exits: [{ condition: 'always', outcome: 'done', reason: 'Finished via builder' }]
+      })
+      .defaultOutcome('done', 'Finished via builder')
+      .maxRounds(1)
+  )
+  .build()
+
+validateWorkflowDefinition(definition)
+```
+
+You can also convert a standalone Zod schema into the workflow parser shape with `zodToWorkflowParserJsonSchema(z.object({ ... }))` for reuse in declarative definitions.
