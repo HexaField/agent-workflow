@@ -1,4 +1,5 @@
 import commonjs from '@rollup/plugin-commonjs'
+import json from '@rollup/plugin-json'
 import { nodeResolve } from '@rollup/plugin-node-resolve'
 import typescript from '@rollup/plugin-typescript'
 import fg from 'fast-glob'
@@ -21,6 +22,7 @@ export default {
   external: ['@opencode-ai/sdk', 'zod'],
   plugins: [
     nodeResolve({ preferBuiltins: true }),
+    json(),
     commonjs(),
     typescript({ tsconfig: path.join(base, 'tsconfig.json'), sourceMap: true })
   ],

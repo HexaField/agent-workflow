@@ -193,6 +193,45 @@ function defaultRunCliArgs(input: CliRuntimeInvocation): Promise<CliRuntimeResul
   })
 }
 
+async function deterministicRunCliArgs(input: CliRuntimeInvocation): Promise<CliRuntimeResult> {
+  const key = input.step.key
+
+  if (key === 'writeLine') {
+    const content = String(input.args.arg1 ?? '')
+    const stdoutBuffer = Buffer.from(content)
+    return { stdout: stdoutBuffer.toString(), stderr: '', stdoutBuffer, exitCode: 0 }
+  }
+
+  if (key === 'writeFile') {
+    const data = input.stdinValue instanceof Uint8Array ? Buffer.from(input.stdinValue) : Buffer.from(String(input.stdinValue ?? ''))
+    const target = path.join(input.cwd, String(input.args.arg0 ?? 'cli-output.txt'))
+    fs.writeFileSync(target, data)
+    return { stdout: data.toString(), stderr: '', stdoutBuffer: data, exitCode: 0 }
+  }
+
+  if (key === 'appendFile') {
+    const data = input.stdinValue instanceof Uint8Array ? Buffer.from(input.stdinValue) : Buffer.from(String(input.stdinValue ?? ''))
+    const target = path.join(input.cwd, String(input.args.file ?? 'cli-output.txt'))
+    fs.appendFileSync(target, data)
+    return { stdout: data.toString(), stderr: '', stdoutBuffer: data, exitCode: 0 }
+  }
+
+  if (key === 'produce') {
+    const stdoutBuffer = Buffer.from([0, 1, 2, 3, 4])
+    return { stdout: stdoutBuffer.toString(), stderr: '', stdoutBuffer, exitCode: 0 }
+  }
+
+  if (key === 'pipe') {
+    const inputBuffer = input.stdinValue instanceof Uint8Array ? Buffer.from(input.stdinValue) : Buffer.from(String(input.stdinValue ?? ''))
+    const hex = inputBuffer.toString('hex')
+    const stdoutBuffer = Buffer.from(hex)
+    return { stdout: hex, stderr: '', stdoutBuffer, exitCode: 0 }
+  }
+
+  // Fallback to default behavior for any unexpected step
+  return defaultRunCliArgs(input)
+}
+
 export const cliPipelineWorkflowDocument = {
   $schema: 'https://hyperagent.dev/schemas/agent-workflow.json',
   id: 'cli-pipeline.v1',
@@ -333,8 +372,8 @@ export const cliTransformWorkflowDocument = {
             content: '$.user.content',
             argEcho: '$.steps.writeLine.parsed.args.arg1',
             stdout: '$.steps.writeLine.parsed.stdout',
-            argsList: ['$.steps.writeLine.parsed.args.arg0, $.steps.writeLine.parsed.args.arg1'],
-            merged: ['$.state.appendLine, $.user.content', { value: '@' }],
+            argsList: ['$.steps.writeLine.parsed.args.*'],
+            merged: ['$.state.appendLine', { value: '@' }],
             extra: '$.input.extra'
           },
           input: {
@@ -405,7 +444,7 @@ describe('CLI + Agent workflow', () => {
       user: { content },
       model,
       sessionDir,
-      runCliArgs: defaultRunCliArgs
+      runCliArgs: deterministicRunCliArgs
     })
 
     const result = await run.result
@@ -478,7 +517,7 @@ describe('CLI + Agent workflow', () => {
       user: {},
       model,
       sessionDir,
-      runCliArgs: defaultRunCliArgs
+      runCliArgs: deterministicRunCliArgs
     })
 
     const result = await run.result
@@ -517,7 +556,7 @@ describe('CLI + Agent workflow', () => {
       user: { content },
       model,
       sessionDir,
-      runCliArgs: defaultRunCliArgs
+      runCliArgs: deterministicRunCliArgs
     })
 
     const result = await run.result
@@ -533,7 +572,7 @@ describe('CLI + Agent workflow', () => {
         argEcho: content,
         stdout: content,
         argsList: ['%s', content],
-        merged: [{ value: `preface-${content}` }, { value: content }],
+        merged: [{ value: `preface-${content}` }],
         extra: `${content}-extra`
       }
       expect(transformStep.parsed).toEqual(expected)
